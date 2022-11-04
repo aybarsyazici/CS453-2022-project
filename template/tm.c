@@ -24,8 +24,26 @@
 
 // Internal headers
 #include <tm.h>
+#include <stdlib.h>
+#include <string.h>
 
 #include "macros.h"
+
+typedef struct segment_node {
+    struct segment_node* prev;
+    struct segment_node* next;
+    // uint8_t segment[] // segment of dynamic size
+} segment_node;
+typedef segment_node* segment_list;
+
+typedef struct Region {
+    void* start;         // Start of the shared memory region (i.e., of the non-deallocable memory segment)
+    segment_list allocs; // Shared memory segments dynamically allocated via tm_alloc within transactions
+    size_t size;        // Size of the non-deallocable memory segment (in bytes)
+    size_t align;       // Size of a word in the shared memory region (in bytes)
+    size_t global_clock; // Global clock of the memory region for TSL II implementation.
+    // TODO: Create limited amount of locks that manage multiple memory segments.
+} Region;
 
 /** Create (i.e. allocate + init) a new shared memory region, with one first non-free-able allocated segment of the requested size and alignment.
  * @param size  Size of the first shared segment of memory to allocate (in bytes), must be a positive multiple of the alignment
@@ -33,8 +51,22 @@
  * @return Opaque shared memory region handle, 'invalid_shared' on failure
 **/
 shared_t tm_create(size_t unused(size), size_t unused(align)) {
-    // TODO: tm_create(size_t, size_t)
-    return invalid_shared;
+    Region* region = (Region *) malloc(sizeof(Region));
+    if (unlikely(!region)) {
+        return invalid_shared;
+    }
+    // We allocate the shared memory buffer such that its words are correctly
+    // aligned.
+    if (posix_memalign(&(region->start), align, size) != 0) {
+        free(region);
+        return invalid_shared;
+    }
+    memset(region->start, 0, size);
+    region->allocs      = NULL;
+    region->size        = size;
+    region->align       = align;
+    region->global_clock = 0; // Global clock/timestamp starts at 0.
+    return region;
 }
 
 /** Destroy (i.e. clean-up + free) a given shared memory region.
