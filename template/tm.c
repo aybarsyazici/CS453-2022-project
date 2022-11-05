@@ -536,15 +536,15 @@ bool tm_read(shared_t shared, tx_t tx, void const* source, size_t size, void* ta
         clearSets(transaction);
         return false;
     }
-    // First we need to find which segment the memory location we are trying to write to is in.
-    segment_node* segment = findSegment(region, target);
+    // First we need to find which segment the memory location we are trying to read from is in.
+    segment_node* segment = findSegment(region, source);
     if(segment == NULL){
         // If no segment is found, then the memory location we are trying to write to is not in the shared memory.
         clearSets(transaction);
         return false;
     }
-    // Check if target + size is inside this segment
-    if((void*) target + size > segment->freeSpace + segment->size){
+    // Check if source + size is inside this segment
+    if((void*) source + size > segment->freeSpace + segment->size){
         // If no, then the transaction is aborted.
         // This is because we are trying to read from a memory location that is not allocated.
         // Before aborting clear the read and write sets of the transaction.
@@ -552,10 +552,10 @@ bool tm_read(shared_t shared, tx_t tx, void const* source, size_t size, void* ta
         return false;
     }
     // One read operation can only read one word.
-    // So we need to check if the memory location we are trying to write to is aligned.
-    if ((size_t) target % region->align != 0) {
+    // So we need to check if the memory location we are trying to read from is aligned.
+    if ((size_t) source % region->align != 0) {
         // If no, then the transaction is aborted.
-        // This is because the memory location we are trying to write to is not aligned.
+        // This is because the memory location we are trying to read from is not aligned.
         // Before aborting clear the read and write sets of the transaction.
         clearSets(transaction);
         return false;
@@ -581,7 +581,7 @@ bool tm_read(shared_t shared, tx_t tx, void const* source, size_t size, void* ta
         // We get here if the transaction is read-only or the memory location
         // we are trying to read from does not exist in the write set.
         // Then we check if the memory location we are trying to read from already exists in the read set.
-        read_set_node * readSetNode = checkReadSet(region, transaction, currentTarget);
+        read_set_node * readSetNode = checkReadSet(region, transaction, currentSource);
         if(readSetNode != NULL){
             // If yes, then we can just copy the old value we have read previously.
             memcpy(currentTarget, readSetNode->value, region->align);
@@ -589,7 +589,7 @@ bool tm_read(shared_t shared, tx_t tx, void const* source, size_t size, void* ta
         }
         // If no, then we need to read from the shared memory as it is our very first time reading from this memory location.
         // First we need to find the offset of the memory location we are trying to read from.
-        size_t offset = (size_t) ((void*) currentTarget - segment->freeSpace) / region->align;
+        size_t offset = (size_t) ((void*) currentSource - segment->freeSpace) / region->align;
         // Check if the memory location is unlocked
         shared_lock_t lock = getLock(segment, offset);
         if (shared_lock_is_locked(&lock)) {
