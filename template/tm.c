@@ -16,6 +16,7 @@
 // Requested features
 #define _GNU_SOURCE
 #define _POSIX_C_SOURCE   200809L
+
 #ifdef __STDC_NO_ATOMICS__
     #error Current C11 compiler does not support atomic operations
 #endif
@@ -27,13 +28,14 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <FlexLexer.h>
 
 #include "macros.h"
 #include "tsm_types.h"
 
 /****************************************************************************************/
 /*                                                                                      */
-/*  TRANSACTIONAL MEMORY OPERATIONS                                                     */
+/*  START OF HELPER FUNCTION DECLARATIONS                                               */
 /*                                                                                      */
 /****************************************************************************************/
 
@@ -70,21 +72,13 @@ void addReadSet(transaction* pTransaction, segment_node* pSegment, size_t offset
     if (pTransaction->readSetHead == NULL) {
         pTransaction->readSetHead = newReadSet;
         pTransaction->readSetTail = newReadSet;
+        pTransaction->readSetSize = 1;
     }
     else {
         pTransaction->readSetTail->next = newReadSet;
         pTransaction->readSetTail = newReadSet;
+        pTransaction->readSetSize++;
     }
-}
-
-/** This function is used to get the version number of a word in a given segment.
- * @param segment The segment to get the version number from.
- * @param shared The shared memory region that the segment belongs to.
- * @param offset The number of alignments from the start of the segment.
- * @return The version number of the word.
- **/
-uint64_t getVersion(segment_node* pSegment, Region* pRegion, size_t offset) {
-    return pSegment->version[offset];
 }
 
 /** This function is used to check if a given address is inside the read set of a given transaction.
@@ -126,21 +120,30 @@ segment_node* findSegment(Region* pRegion, void* address) {
  * @param offset The number of alignments from the start of the segment.
  * @param version The current version of the word that we are writing.
  * @param value The value of the word that we are writing.
+ * @param newValue The new value of the word that we are writing.
  **/
-void addWriteSet(transaction* pTransaction, segment_node* pSegment, size_t offset, uint64_t version, void* value) {
+void addWriteSet(transaction* pTransaction,
+                 segment_node* pSegment,
+                 size_t offset,
+                 uint64_t version,
+                 void* value,
+                 void* newValue) {
     write_set_node *newWriteSet = (write_set_node *) malloc(sizeof(write_set_node));
     newWriteSet->segment = pSegment;
     newWriteSet->offset = offset;
     newWriteSet->version = version;
     newWriteSet->newVersion = version + 1;
     newWriteSet->value = value;
+    newWriteSet->newValue = newValue;
     newWriteSet->next = NULL;
     if (pTransaction->writeSetHead == NULL) {
         pTransaction->writeSetHead = newWriteSet;
         pTransaction->writeSetTail = newWriteSet;
+        pTransaction->writeSetSize = 1;
     } else {
         pTransaction->writeSetTail->next = newWriteSet;
         pTransaction->writeSetTail = newWriteSet;
+        pTransaction->writeSetSize++;
     }
 }
 
@@ -168,9 +171,174 @@ write_set_node* checkWriteSet(Region* pRegion, transaction* pTransaction, void* 
  **/
 shared_lock_t getLock(segment_node* pSegment, size_t offset) {
     // Remember that each segment has one lock per TSM_WORDS_PER_LOCK words.
-    // the lock at index i protects the words at indices i * TSM_WORDS_PER_LOCK to (i + 1) * TSM_WORDS_PER_LOCK - 1 (inclusive.)
-    return pSegment->locks[offset / TSM_WORDS_PER_LOCK];
+    // the lock at index 'i' protects the words at indices i * TSM_WORDS_PER_LOCK to (i + 1) * TSM_WORDS_PER_LOCK - 1 (inclusive.)
+    return pSegment->locks[offset / TSM_WORDS_PER_LOCK].lock;
 }
+
+/** This function is used to get the version number of a word in a given segment.
+ * @param segment The segment to get the version number from.
+ * @param shared The shared memory region that the segment belongs to.
+ * @param offset The number of alignments from the start of the segment.
+ * @return The version number of the word.
+ **/
+uint64_t getVersion(segment_node* pSegment, Region* unused(pRegion), size_t offset) {
+    return pSegment->locks[offset / TSM_WORDS_PER_LOCK].version;
+}
+
+/** This function sorts the write set of the given transaction
+ * by increasing order of the address of locks it needs to acquire
+ * @param pTransaction pointer to the transaction
+**/
+
+void sortWriteSet(transaction *pTransaction) {
+    write_set_node *current = pTransaction->writeSetHead;
+    write_set_node *index = NULL;
+    shared_t tempValue;
+    shared_t tempNewValue;
+    uint64_t tempVersion;
+    uint64_t tempNewVersion;
+    segment_node *tempSegment;
+    size_t tempOffset;
+
+    while (current != NULL) {
+        index = current->next;
+
+        while (index != NULL) {
+            shared_lock_t currentLock = getLock(current->segment, current->offset);
+            shared_lock_t indexLock = getLock(index->segment, index->offset);
+            if (&currentLock >
+                &indexLock) {
+                tempValue = current->value;
+                tempNewValue = current->newValue;
+                tempVersion = current->version;
+                tempNewVersion = current->newVersion;
+                tempSegment = current->segment;
+                tempOffset = current->offset;
+
+                current->value = index->value;
+                current->newValue = index->newValue;
+                current->version = index->version;
+                current->newVersion = index->newVersion;
+                current->segment = index->segment;
+                current->offset = index->offset;
+
+                index->value = tempValue;
+                index->newValue = tempNewValue;
+                index->version = tempVersion;
+                index->newVersion = tempNewVersion;
+                index->segment = tempSegment;
+                index->offset = tempOffset;
+            }
+
+            index = index->next;
+        }
+
+        current = current->next;
+    }
+
+}
+
+/** This function returns all the locks in the write set of the given transaction
+ * @param pTransaction pointer to the transaction
+ * @param pLocks pointer to the array of locks
+ * @param pLocksSize pointer to the size of the array of locks
+ * @return true if successful, false otherwise
+ **/
+bool getLocks(transaction *pTransaction, shared_lock_t **pLocks, size_t *pLocksSize) {
+    write_set_node *current = pTransaction->writeSetHead;
+    size_t locksSize = 0;
+    shared_lock_t *locks = (shared_lock_t *) malloc(sizeof(shared_lock_t) * pTransaction->writeSetSize);
+    if (locks == NULL) {
+        return false;
+    }
+    while (current != NULL) {
+        locks[locksSize] = getLock(current->segment, current->offset);
+        locksSize++;
+        current = current->next;
+    }
+    *pLocks = locks;
+    *pLocksSize = locksSize;
+    return true;
+}
+
+/** This function is used to acquire the locks associated with the write set of a given transaction.
+ * @param transaction The transaction to acquire the locks for.
+ * @return true if the locks were acquired successfully, or false if the locks couldn't be acquired.
+ **/
+bool acquireLocks(transaction* pTransaction) {
+    write_set_node *currentWriteSet = pTransaction->writeSetHead;
+    sortWriteSet(pTransaction);
+    shared_lock_t *locks;
+    size_t locksSize;
+    if (!getLocks(pTransaction, &locks, &locksSize)) {
+        return false;
+    }
+    for (size_t i = 0; i < locksSize; i++) {
+        if (!shared_lock_acquire(&locks[i])) {
+            for (size_t j = 0; j < i; j++) {
+                shared_lock_release(&locks[j]);
+            }
+            free(locks);
+            return false;
+        }
+    }
+    free(locks);
+    return true;
+}
+
+/** This function is used to release the locks associated with the write set of a given transaction.
+ * @param transaction The transaction to release the locks for.
+ * @return true if the locks were released successfully, or false if the locks couldn't be released.
+ **/
+bool releaseLocks(transaction* pTransaction) {
+    write_set_node *currentWriteSet = pTransaction->writeSetHead;
+    sortWriteSet(pTransaction);
+    shared_lock_t *locks;
+    size_t locksSize;
+    if (!getLocks(pTransaction, &locks, &locksSize)) {
+        return false;
+    }
+    for (size_t i = 0; i < locksSize; i++) {
+        shared_lock_release(&locks[i]);
+    }
+    free(locks);
+    return true;
+}
+
+/** This function clears the read and write sets of the given transaction.
+ * @param transaction The transaction to clear the read and write sets of.
+ * @return true if the read and write sets were cleared successfully, or false if they couldn't be cleared.
+ **/
+bool clearSets(transaction* pTransaction) {
+    write_set_node *currentWriteSet = pTransaction->writeSetHead;
+    write_set_node *nextWriteSet;
+    while (currentWriteSet != NULL) {
+        nextWriteSet = currentWriteSet->next;
+        free(currentWriteSet->newValue);
+        free(currentWriteSet->value);
+        free(currentWriteSet);
+        currentWriteSet = nextWriteSet;
+    }
+    pTransaction->writeSetHead = NULL;
+    pTransaction->writeSetTail = NULL;
+    pTransaction->writeSetSize = 0;
+
+    read_set_node *currentReadSet = pTransaction->readSetHead;
+    read_set_node *nextReadSet;
+    while (currentReadSet != NULL) {
+        nextReadSet = currentReadSet->next;
+        free(currentReadSet->value);
+        free(currentReadSet);
+        currentReadSet = nextReadSet;
+    }
+
+    return true;
+}
+/**
+ ***************************************************************************************
+ * END OF HELPER FUNCTIONS
+ ***************************************************************************************
+ **/
 
 /** Create (i.e. allocate + init) a new shared memory region, with one first non-free-able allocated segment of the requested size and alignment.
  * @param size  Size of the first shared segment of memory to allocate (in bytes), must be a positive multiple of the alignment
@@ -198,32 +366,20 @@ shared_t tm_create(size_t size, size_t align) {
     }
     // Initialize the region with 0s
     memset(firstSegment->freeSpace, 0, size);
-    // Create the version variables of the segment
-    firstSegment->version = (uint64_t *) malloc(sizeof(uint64_t) * (size / align));
-    if(unlikely(!firstSegment->version)) {
-        free(firstSegment->freeSpace);
-        free(firstSegment);
-        free(region);
-        return invalid_shared;
-    }
-    // Each version variable is initialized to 0 as we are just creating the region now.
-    for (int i = 0; i < size / align; i++) {
-        firstSegment->version[i] = 0;
-    }
-    // Initialize locks in the segment, as each lock is associated with TSM_WORDS_PER_LOCK words, we need to initialize
+    // Initialize lock nodes in the segment, as each lock is associated with TSM_WORDS_PER_LOCK words, we need to initialize
     // size / align / TSM_WORDS_PER_LOCK locks.
     // But as this can give us a decimal number, we need to round it up to the next integer.
     firstSegment->lock_size = (int) ceil((double) size / align / TSM_WORDS_PER_LOCK);
-    firstSegment->locks = (shared_lock_t *) malloc(sizeof(shared_lock_t) * firstSegment->lock_size);
+    firstSegment->locks = (lock_node *)malloc(sizeof(lock_node) * firstSegment->lock_size);
     if(unlikely(!firstSegment->locks)) {
-        free(firstSegment->version);
         free(firstSegment->freeSpace);
         free(firstSegment);
         free(region);
         return invalid_shared;
     }
     for (int i = 0; i < firstSegment->lock_size; i++) {
-        shared_lock_init(firstSegment->locks + i);
+        shared_lock_init(&((firstSegment->locks + i)->lock));
+        (firstSegment->locks + i)->version = 0;
     }
     firstSegment->size  = size;
     firstSegment->id    = 0;
@@ -250,10 +406,9 @@ void tm_destroy(shared_t shared) {
         free(currentSegment->freeSpace);
         // Destroy all locks of this segment.
         for (int i = 0; i < currentSegment->size / region->align / TSM_WORDS_PER_LOCK; i++) {
-            shared_lock_cleanup(currentSegment->locks + i);
+            shared_lock_cleanup(&((currentSegment->locks + i)->lock));
         }
         free(currentSegment->locks);
-        free(currentSegment->version);
         free(currentSegment);
         currentSegment = nextSegment;
     }
@@ -298,6 +453,7 @@ tx_t tm_begin(shared_t shared, bool is_ro) {
     }
     // Initialize the transaction with an empty readSet and writeSet.
     newTransaction->readSetHead = NULL;
+    newTransaction->version = region->globalVersion;
     newTransaction->readSetTail = NULL;
     newTransaction->writeSetHead = NULL;
     newTransaction->writeSetTail = NULL;
@@ -325,9 +481,40 @@ tx_t tm_begin(shared_t shared, bool is_ro) {
  * @param tx     Transaction to end
  * @return Whether the whole transaction committed
 **/
-bool tm_end(shared_t unused(shared), tx_t unused(tx)) {
-    // TODO: tm_end(shared_t, tx_t)
-    return false;
+bool tm_end(shared_t shared, tx_t tx) {
+    Region* region = (Region *) shared;
+    transaction* transaction = getTransaction(region, tx);
+    // The commit check will be different depending on whether the transaction is read-only or not.
+    read_set_node * currentReadSetNode = transaction->readSetHead;
+    while(currentReadSetNode != NULL){
+        if(currentReadSetNode->version != getVersion(currentReadSetNode->segment,region,currentReadSetNode->offset)){
+            // If the version of the lock node is different from the version of the read set node, then
+            // the transaction failed. As this transaction was working with old data, we need to abort it.
+            return false;
+        }
+            // We have to also check if the lock of this read set node is currently held by another transaction.
+        else{
+            shared_lock_t lock = getLock(currentReadSetNode->segment,currentReadSetNode->offset);
+            if(shared_lock_is_locked(&lock)){
+                // If the lock is held by another transaction, then we need to abort this transaction.
+                return false;
+            }
+        }
+        currentReadSetNode = currentReadSetNode->next;
+    }
+    if(!transaction->isReadOnly){
+        // If the transaction is not read-only, then the write set also should be checked
+        // we first need to acquire the locks in the write set.
+        if(acquireLocks(transaction)){
+            //TODO
+        }
+        else{
+            // If we cannot acquire the locks, then we abort the transaction.
+            return false;
+        }
+    }
+    // If we reach this point, then the transaction succeeded.
+    return true;
 }
 
 /** [thread-safe] Read operation in the given transaction, source in the shared region and target in a private region.
@@ -344,89 +531,100 @@ bool tm_read(shared_t shared, tx_t tx, void const* source, size_t size, void* ta
     if (unlikely(!transaction)) { // No transaction could be found with the given id
         return false;
     }
-    // Check if the transaction is read-only.
-    if (transaction->isReadOnly) {
-        // Check if the memory location we are trying to read from already exists in the read set.
-        read_set_node* readSetNode = checkReadSet(region, transaction, (void*) source);
+    // Check if size is a positive multiple of the alignment.
+    if (unlikely(size % region->align != 0 || size <= 0)) {
+        clearSets(transaction);
+        return false;
+    }
+    // First we need to find which segment the memory location we are trying to write to is in.
+    segment_node* segment = findSegment(region, target);
+    if(segment == NULL){
+        // If no segment is found, then the memory location we are trying to write to is not in the shared memory.
+        clearSets(transaction);
+        return false;
+    }
+    // Check if target + size is inside this segment
+    if((void*) target + size > segment->freeSpace + segment->size){
+        // If no, then the transaction is aborted.
+        // This is because we are trying to read from a memory location that is not allocated.
+        // Before aborting clear the read and write sets of the transaction.
+        clearSets(transaction);
+        return false;
+    }
+    // One read operation can only read one word.
+    // So we need to check if the memory location we are trying to write to is aligned.
+    if ((size_t) target % region->align != 0) {
+        // If no, then the transaction is aborted.
+        // This is because the memory location we are trying to write to is not aligned.
+        // Before aborting clear the read and write sets of the transaction.
+        clearSets(transaction);
+        return false;
+    }
+    // We are required to read size amount of bytes from the given memory location.
+    // Given that we have our word size equal to the alignment, we will have size / alignment words to read.
+    size_t currentWord = 0;
+    while(currentWord < size / region->align){
+        // Check if the memory location we are trying to write to already exists in the write set.
+        void* currentTarget = (void*) target + currentWord * region->align;
+        void* currentSource = (void*) source + currentWord * region->align;
+        // Check if the transaction is read-only.
+        if (!transaction->isReadOnly) {
+            // The current transaction is NOT read-only.
+            // Then we first check if the memory location we are trying to read from already exists in the write set.
+            write_set_node *writeSetNode = checkWriteSet(region, transaction, currentSource);
+            if (writeSetNode != NULL) {
+                // If yes, then we can just copy the value from the write set as this is the value we have previously written.
+                memcpy(currentTarget, writeSetNode->newValue, region->align);
+                continue;
+            }
+        }
+        // We get here if the transaction is read-only or the memory location
+        // we are trying to read from does not exist in the write set.
+        // Then we check if the memory location we are trying to read from already exists in the read set.
+        read_set_node * readSetNode = checkReadSet(region, transaction, currentTarget);
         if(readSetNode != NULL){
-            // If yes, then we can just copy the value from the read set.
-            memcpy(target, readSetNode->value, size);
-            return true;
+            // If yes, then we can just copy the old value we have read previously.
+            memcpy(currentTarget, readSetNode->value, region->align);
+            continue;
         }
-        // If no, then we need to read from the shared memory.
-        // First we need to find which segment the memory location we are trying to read from is in.
-        segment_node* segment = findSegment(region, (void*) source);
-        if(segment == NULL){
-            // If no segment is found, then the memory location we are trying to read from is not in the shared memory.
-            return false;
-        }
-        // Then we need to find the offset of the memory location we are trying to read from.
-        size_t offset = (size_t) ((void*) source - segment->freeSpace) / region->align;
+        // If no, then we need to read from the shared memory as it is our very first time reading from this memory location.
+        // First we need to find the offset of the memory location we are trying to read from.
+        size_t offset = (size_t) ((void*) currentTarget - segment->freeSpace) / region->align;
         // Check if the memory location is unlocked
         shared_lock_t lock = getLock(segment, offset);
         if (shared_lock_is_locked(&lock)) {
             // If no, then the transaction is aborted.
             // This is because the memory location we are trying to read from is being written to by another transaction.
+            // Before aborting clear the whole read and write set of the transaction.
+            clearSets(transaction);
             return false;
         }
-        // Then we need to get the version number of the word we are trying to read.
+        // Then we need to get the version number of the word we are trying to write.
         uint64_t version = getVersion(segment, region, offset);
-        // Then we need to read the value of the word we are trying to read.
-        void* value = malloc(size);
+        // Check if this version is greater than the transaction's version.
+        if (version > transaction->version) {
+            // If yes, then the transaction is aborted.
+            // This is because the memory location we are trying to read from, has been written by another transaction.
+            // Before aborting clear the whole read and write set of the transaction.
+            clearSets(transaction);
+            return false;
+        }
+        // Then we need to read the value of the word.
+        // because we are reading one word at a time, size is always equal to the alignment.
+        void* value = aligned_alloc(region->align,region->align);
         if(value == NULL){
             // If the malloc fails, then we return false.
+            clearSets(transaction);
             return false;
         }
-        memcpy(value, source, size);
-        // Then we need to add the read set node to the transaction.
+        memcpy(value, currentSource, region->align); // we save the value we read in case we read it again.
+        // Then we need to add the read set node to the read set.
         addReadSet(transaction, segment, offset, version, value);
-        // Then we can copy the value to the target.
-        memcpy(target, value, size);
-        return true;
+        // Then we need to copy the value to the target.
+        memcpy(currentTarget, value, region->align);
+        currentWord++;
     }
-    else{
-        // The current transaction is NOT read-only.
-        // First check if the memory location we are trying to read from already exists in the write set.
-        write_set_node* writeSetNode = checkWriteSet(region, transaction, (void*) source);
-        if(writeSetNode != NULL){
-            // If yes, then we can just copy the value from the write set as this is the value we have previously written.
-            memcpy(target, writeSetNode->value, size);
-            return true;
-        }
-        // If no, check if it is in the read set.
-        read_set_node* readSetNode = checkReadSet(region, transaction, (void*) source);
-        if(readSetNode != NULL){
-            // If yes, then we can just copy the value from the read set.
-            memcpy(target, readSetNode->value, size);
-            return true;
-        }
-        // If no, then we need to read from the shared memory.
-        // First we need to find which segment the memory location we are trying to read from is in.
-        segment_node* segment = findSegment(region, (void*) source);
-        if(segment == NULL){
-            // If no segment is found, then the memory location we are trying to read from is not in the shared memory.
-            return false;
-        }
-        // Then we need to find the offset of the memory location we are trying to read from.
-        size_t offset = (size_t) ((void*) source - segment->freeSpace) / region->align;
-        // Check if the memory location is unlocked
-        shared_lock_t lock = getLock(segment, offset);
-        if (shared_lock_is_locked(&lock)) {
-            // If no, then the transaction is aborted.
-            // This is because the memory location we are trying to read from is being written to by another transaction.
-            return false;
-        }
-        // Then we need to get the version number of the word we are trying to read.
-        uint64_t version = getVersion(segment, region, offset);
-        // Then we need to read the value of the word we are trying to read.
-        void* value = malloc(size);
-        memcpy(value, source, size);
-        // Then we need to add the read set node to the transaction.
-        addReadSet(transaction, segment, offset, version, value);
-        // Then we can copy the value to the target.
-        memcpy(target, value, size);
-        return true;
-    }
+    return true;
 }
 
 /** [thread-safe] Write operation in the given transaction, source in a private region and target in the shared region.
@@ -437,9 +635,110 @@ bool tm_read(shared_t shared, tx_t tx, void const* source, size_t size, void* ta
  * @param target Target start address (in the shared region)
  * @return Whether the whole transaction can continue
 **/
-bool tm_write(shared_t unused(shared), tx_t unused(tx), void const* unused(source), size_t unused(size), void* unused(target)) {
-    // TODO: tm_write(shared_t, tx_t, void const*, size_t, void*)
-    return false;
+bool tm_write(shared_t shared, tx_t tx, void const* source, size_t size, void* target) {
+    Region* region = (Region *) shared;
+    transaction* transaction = getTransaction(region, tx);
+    if (unlikely(!transaction)) { // No transaction could be found with the given id
+        return false;
+    }
+    // Check if the transaction is read-only.
+    if (unlikely(transaction->isReadOnly)) {
+        // If yes, then the transaction is aborted.
+        // This is because the transaction is read-only.
+        // Before aborting clear the whole read and write set of the transaction.
+        clearSets(transaction);
+        return false;
+    }
+    // Check if the size is a positive multiple of the alignment.
+    if (unlikely(size % region->align != 0 || size <= 0)) {
+        // If no, then the transaction is aborted.
+        // This is because the size is not a positive multiple of the alignment.
+        // Before aborting clear the whole read and write set of the transaction.
+        clearSets(transaction);
+        return false;
+    }
+    // First we need to find which segment the memory location we are trying to write to is in.
+    segment_node* segment = findSegment(region, target);
+    if(segment == NULL){
+        // If no segment is found, then the memory location we are trying to write to is not in the shared memory.
+        clearSets(transaction);
+        return false;
+    }
+    // Check if target + size is inside this segment
+    if((void*) target + size > segment->freeSpace + segment->size){
+        // If no, then the transaction is aborted.
+        // This is because the memory location we don't have enough memory.
+        // Before aborting clear the read and write sets of the transaction.
+        clearSets(transaction);
+        return false;
+    }
+    // One write operation can only write to one word.
+    // So we need to check if the memory location we are trying to write to is aligned.
+    if ((size_t) target % region->align != 0) {
+        // If no, then the transaction is aborted.
+        // This is because the memory location we are trying to write to is not aligned.
+        // Before aborting clear the read and write sets of the transaction.
+        clearSets(transaction);
+        return false;
+    }
+    // We are required to write size amount of bytes to the memory location.
+    // Given that we have our word size equal to the alignment, we will have size / alignment words to write.
+    size_t currentWord = 0;
+    while(currentWord < size / region->align){
+        void* currentTarget = (void*) target + currentWord * region->align;
+        void* currentSource = (void*) source + currentWord * region->align;
+        // Check if the memory location we are trying to write to already exists in the write set.
+        write_set_node* writeSetNode = checkWriteSet(region, transaction, currentTarget);
+        if(writeSetNode != NULL){
+            // If yes, then we can just copy the new value to the write set.
+            memcpy(writeSetNode->newValue, currentSource, region->align);
+            continue;
+        }
+        // If no, then we need to read from the shared memory.
+        // First we need to find the offset of the memory location we are trying to write to.
+        size_t offset = (size_t) ((void*) currentTarget - segment->freeSpace) / region->align;
+        // Check if the memory location is unlocked
+        shared_lock_t lock = getLock(segment, offset);
+        if (shared_lock_is_locked(&lock)) {
+            // If no, then the transaction is aborted.
+            // This is because the memory location we are trying to write to is being written to by another transaction.
+            // Before aborting clear the whole read and write set of the transaction.
+            clearSets(transaction);
+            return false;
+        }
+        // Then we need to get the version number of the word we are trying to write.
+        uint64_t version = getVersion(segment, region, offset);
+        // Check if this version is greater than the transaction's version.
+        if (version > transaction->version) {
+            // If yes, then the transaction is aborted.
+            // This is because the memory location we are trying to write to has been written by another transaction.
+            // Before aborting clear the whole read and write set of the transaction.
+            clearSets(transaction);
+            return false;
+        }
+        // Then we need to read the old value of the word we are trying to write.
+        // because we are writing one word at a time, size is always equal to the alignment.
+        void* value = aligned_alloc(region->align,region->align);
+        if(value == NULL){
+            // If the malloc fails, then we return false.
+            clearSets(transaction);
+            return false;
+        }
+        // This way we have saved the old value of the word.
+        memcpy(value, currentTarget, region->align);
+        // Now we also need to write the possible new value of the word
+        void* newValue = aligned_alloc(region->align,region->align);
+        if(newValue == NULL){
+            // If the malloc fails, then we return false.
+            clearSets(transaction);
+            return false;
+        }
+        memcpy(newValue, currentSource, region->align);
+        // Then we need to add the write set node to the transaction.
+        addWriteSet(transaction, segment, offset, version, value, newValue);
+        currentWord++;
+    }
+    return true;
 }
 
 /** [thread-safe] Memory allocation in the given transaction.
@@ -461,30 +760,19 @@ alloc_t tm_alloc(shared_t shared, tx_t unused(tx), size_t size, void** target) {
         free(newSegment);
         return nomem_alloc;
     }
-
-    newSegment->version = (uint64_t *) malloc(sizeof(uint64_t) * (size / region->align));
-    if(unlikely(!newSegment->version)) {
-        free(newSegment->freeSpace);
-        free(newSegment);
-        return nomem_alloc;
-    }
-    // Each version variable is initialized to 0 as this segment is just being created.
-    for (int i = 0; i < size / region->align; i++) {
-        newSegment->version[i] = 0;
-    }
     // Initialize locks in the segment, as each lock is associated with TSM_WORDS_PER_LOCK words, we need to initialize
     // size / align / TSM_WORDS_PER_LOCK locks.
     // But as this can give us a decimal number, we need to round it up to the next integer.
     newSegment->lock_size = (int) ceil((double) size / region->align / TSM_WORDS_PER_LOCK);
-    newSegment->locks = (shared_lock_t *) malloc(sizeof(shared_lock_t) * newSegment->lock_size);
+    newSegment->locks = (lock_node *) malloc(sizeof(lock_node) * newSegment->lock_size);
     if(unlikely(!newSegment->locks)) {
         free(newSegment->freeSpace);
-        free(newSegment->version);
         free(newSegment);
         return nomem_alloc;
     }
     for (int i = 0; i < newSegment->lock_size; i++) {
-        shared_lock_init(newSegment->locks + i);
+        shared_lock_init(&((newSegment->locks + i)->lock));
+        newSegment->locks[i].version = region->globalVersion;
     }
     // Add this segment to the list of segments of the region.
     newSegment->prev = region->allocTail; // The prev pointer of this segment points to the last segment of the region.
@@ -531,10 +819,9 @@ bool tm_free(shared_t shared, tx_t unused(tx), void* target) {
     }
     // Free the memory buffer.
     free(currentSegment->freeSpace);
-    free(currentSegment->version);
     // Cleanup all locks
     for (int i = 0; i < currentSegment->size / region->align / TSM_WORDS_PER_LOCK; i++) {
-        shared_lock_cleanup(currentSegment->locks + i);
+        shared_lock_cleanup(&((currentSegment->locks + i)->lock));
     }
     free(currentSegment->locks);
     free(currentSegment);

@@ -8,6 +8,11 @@
 #include "shared-lock.h"
 #define TSM_WORDS_PER_LOCK 5
 
+typedef struct lock_node {
+    shared_lock_t lock;
+    uint64_t version;
+} lock_node;
+
 typedef struct segment_node {
     struct segment_node* prev; // Pointer to the previous segment
     struct segment_node* next; // Pointer to the next segment
@@ -17,17 +22,13 @@ typedef struct segment_node {
     // Each segment needs to keep a version number for each word in the segment
     // The size of a word is decided by the user when he creates the shared memory region
     // word size will be equal to the alignment size of the shared memory region
-    uint64_t* version; // Array of version numbers for each word in the segment
-    size_t global_clock; // Global clock of this segment
-
     // The size of the array is equal to the number of words in the segment divided by TSM_WORDS_PER_LOCK
     // Each lock is used to protect TSM_WORDS_PER_LOCK words in the segment
     // The lock at index i protects the words at indices i * TSM_WORDS_PER_LOCK to (i + 1) * TSM_WORDS_PER_LOCK - 1 (inclusive.)
     // If the number of words in the segment is not a multiple of TSM_WORDS_PER_LOCK, the last lock protects the remaining words
-    shared_lock_t* locks; // Array of locks for each word in the segment
     int lock_size; // Size of the lock array
+    lock_node* locks; // Array of locks
 } segment_node;
-typedef segment_node* segment_list;
 
 // Read set node to be used in a transaction
 // Each node contains the info of which shared region it read from
@@ -66,11 +67,14 @@ typedef struct write_set_node {
 // A transaction is identified by a unique transaction id.
 // A transaction can be aborted or committed.
 typedef struct transaction{
-    uintptr_t id; // Unique transaction id
+    size_t id; // Unique transaction id
+    uint64_t version; // Global version at the time of the transaction start
     read_set_node* readSetHead; // Pointer pointing to the first of the read set nodes
     read_set_node* readSetTail; // Pointer pointing to the last of the read set nodes
     write_set_node* writeSetHead; // Pointer pointing to the first of the write set nodes
     write_set_node* writeSetTail; // Pointer pointing to the last of the write set nodes
+    uint64_t readSetSize; // Size of the read set
+    uint64_t writeSetSize; // Size of the write set
     struct transaction* next; // Pointer to the next transaction
     struct transaction* prev; // Pointer to the previous transaction
     bool isReadOnly; // Boolean to check if the transaction is read only or not
@@ -78,10 +82,11 @@ typedef struct transaction{
 
 typedef struct Region {
     void* start;         // Start of the shared memory region (i.e., of the non-deallocable memory segment)
-    segment_list allocHead; // Pointer pointing to the first of the shared memory segments dynamically allocated via tm_alloc within transactions
-    segment_list allocTail; // Pointer pointing to the last of the shared memory segments dynamically allocated via tm_alloc within transactions
+    segment_node* allocHead; // Pointer pointing to the first of the shared memory segments dynamically allocated via tm_alloc within transactions
+    segment_node* allocTail; // Pointer pointing to the last of the shared memory segments dynamically allocated via tm_alloc within transactions
     size_t align;       // Size of a word in the shared memory region (in bytes)
     transaction* transactions; // Linked list of transactions running on this shared memory region
+    uint64_t globalVersion; // Global version of the shared memory region
 } Region;
 
 #endif //CS453_2022_PROJECT_TSM_TYPES_H
