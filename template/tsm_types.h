@@ -55,6 +55,7 @@ typedef struct write_set_node {
     shared_t value; // Old value of the word at the time of the writing operation
     shared_t newValue; // Potential new value of the word, this new value is not written to the shared region yet, it will be written at commit time
     uint64_t version; // Version of the word at the time of the writing operation
+    uint64_t newVersion; // Potential new version of the word, this new version is not written to the shared region yet, it will be written at commit time
 } write_set_node;
 
 

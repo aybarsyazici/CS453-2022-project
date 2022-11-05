@@ -36,9 +36,11 @@
 /*  TRANSACTIONAL MEMORY OPERATIONS                                                     */
 /*                                                                                      */
 /****************************************************************************************/
+
 /** This function is used to get the transaction with the given id from the region.
  * @param region The region to get the transaction from.
  * @param id The id of the transaction to get.
+ * @return The transaction with the given id.
  **/
 transaction* getTransaction(Region *pRegion, tx_t tx) {
     transaction* currentTransaction = pRegion->transactions;
@@ -56,7 +58,7 @@ transaction* getTransaction(Region *pRegion, tx_t tx) {
  * @param segment The memory segment that we are reading from.
  * @param offset The number of alignments from the start of the segment.
  * @param version The current version of the word that we are reading.
- * @param value The value of the word that we are reading.
+ * @param value The value of the word that we are reading at read time
  **/
 void addReadSet(transaction* pTransaction, segment_node* pSegment, size_t offset, uint64_t version, void* value) {
     read_set_node * newReadSet = (read_set_node *) malloc(sizeof(read_set_node));
@@ -80,7 +82,7 @@ void addReadSet(transaction* pTransaction, segment_node* pSegment, size_t offset
  * @param shared The shared memory region that the segment belongs to.
  * @param offset The number of alignments from the start of the segment.
  * @return The version number of the word.
- * **/
+ **/
 uint64_t getVersion(segment_node* pSegment, Region* pRegion, size_t offset) {
     return pSegment->version[offset];
 }
@@ -90,7 +92,7 @@ uint64_t getVersion(segment_node* pSegment, Region* pRegion, size_t offset) {
  * @param transaction The transaction to check the read set of.
  * @param address The address to check.
  * @return The read set node that contains the address, or NULL if the address is not in the read set.
- * **/
+ **/
 read_set_node* checkReadSet(Region* pRegion, transaction* pTransaction, void* address) {
     read_set_node *currentReadSet = pTransaction->readSetHead;
     while (currentReadSet != NULL) {
@@ -106,7 +108,7 @@ read_set_node* checkReadSet(Region* pRegion, transaction* pTransaction, void* ad
  * @param shared The shared memory region that the address belongs to.
  * @param address The address to find the segment of.
  * @return The segment that contains the address, or NULL if the address is not in any segment.
- * **/
+ **/
 segment_node* findSegment(Region* pRegion, void* address) {
     segment_node *currentSegment = pRegion->allocHead;
     while (currentSegment != NULL) {
@@ -130,6 +132,7 @@ void addWriteSet(transaction* pTransaction, segment_node* pSegment, size_t offse
     newWriteSet->segment = pSegment;
     newWriteSet->offset = offset;
     newWriteSet->version = version;
+    newWriteSet->newVersion = version + 1;
     newWriteSet->value = value;
     newWriteSet->next = NULL;
     if (pTransaction->writeSetHead == NULL) {
@@ -146,7 +149,7 @@ void addWriteSet(transaction* pTransaction, segment_node* pSegment, size_t offse
  * @param transaction The transaction to check the write set of.
  * @param address The address to check.
  * @return The write set node that contains the address, or NULL if the address is not in the write set.
- * **/
+ **/
 write_set_node* checkWriteSet(Region* pRegion, transaction* pTransaction, void* address) {
     write_set_node *currentWriteSet = pTransaction->writeSetHead;
     while (currentWriteSet != NULL) {
@@ -162,10 +165,10 @@ write_set_node* checkWriteSet(Region* pRegion, transaction* pTransaction, void* 
  * @param segment The segment to get the lock from.
  * @param offset The number of alignments from the start of the segment.
  * @return The lock associated with the memory location.
- * **/
+ **/
 shared_lock_t getLock(segment_node* pSegment, size_t offset) {
     // Remember that each segment has one lock per TSM_WORDS_PER_LOCK words.
-    // Thus t lock at index i protects the words at indices i * TSM_WORDS_PER_LOCK to (i + 1) * TSM_WORDS_PER_LOCK - 1 (inclusive.)
+    // the lock at index i protects the words at indices i * TSM_WORDS_PER_LOCK to (i + 1) * TSM_WORDS_PER_LOCK - 1 (inclusive.)
     return pSegment->locks[offset / TSM_WORDS_PER_LOCK];
 }
 
@@ -424,7 +427,6 @@ bool tm_read(shared_t shared, tx_t tx, void const* source, size_t size, void* ta
         memcpy(target, value, size);
         return true;
     }
-    return false;
 }
 
 /** [thread-safe] Write operation in the given transaction, source in a private region and target in the shared region.
