@@ -12,10 +12,6 @@ typedef struct lock_t {
     pthread_cond_t cv;
 }lock_t;
 
-void test(pthread_mutex_t mm){
-    pthread_mutex_trylock(&mm);
-}
-
 /** Initialize the given lock.
  * @param lock Lock to initialize
  * @return Whether the operation is a success
@@ -49,3 +45,10 @@ void lock_wait(struct lock_t* lock);
  * @param lock Lock on which other threads are waiting.
 **/
 void lock_wake_up(struct lock_t* lock);
+
+/** Function to atomically check if the given lock is locked.
+ * Unlocks the lock before returning.
+ * @param lock Lock to check
+ * @return Whether the lock is locked
+**/
+bool lock_is_locked(struct lock_t* lock);

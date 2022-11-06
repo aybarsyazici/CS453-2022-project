@@ -5,11 +5,11 @@
 #ifndef CS453_2022_PROJECT_TSM_TYPES_H
 #define CS453_2022_PROJECT_TSM_TYPES_H
 #include "tm.h"
-#include "shared-lock.h"
+#include "lock.h"
 #define TSM_WORDS_PER_LOCK 5
 
 typedef struct lock_node {
-    shared_lock_t lock;
+    lock_t lock;
     uint64_t version;
 } lock_node;
 
@@ -26,7 +26,7 @@ typedef struct segment_node {
     // Each lock is used to protect TSM_WORDS_PER_LOCK words in the segment
     // The lock at index i protects the words at indices i * TSM_WORDS_PER_LOCK to (i + 1) * TSM_WORDS_PER_LOCK - 1 (inclusive.)
     // If the number of words in the segment is not a multiple of TSM_WORDS_PER_LOCK, the last lock protects the remaining words
-    int lock_size; // Size of the lock array
+    size_t lock_size; // Size of the lock array
     lock_node* locks; // Array of locks
 } segment_node;
 
@@ -56,7 +56,6 @@ typedef struct write_set_node {
     shared_t value; // Old value of the word at the time of the writing operation
     shared_t newValue; // Potential new value of the word, this new value is not written to the shared region yet, it will be written at commit time
     uint64_t version; // Version of the word at the time of the writing operation
-    uint64_t newVersion; // Potential new version of the word, this new version is not written to the shared region yet, it will be written at commit time
 } write_set_node;
 
 

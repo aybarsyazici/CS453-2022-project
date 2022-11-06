@@ -1,3 +1,4 @@
+#include <sys/errno.h>
 #include "lock.h"
 
 bool lock_init(struct lock_t* lock) {
@@ -24,4 +25,12 @@ void lock_wait(struct lock_t* lock) {
 
 void lock_wake_up(struct lock_t* lock) {
     pthread_cond_broadcast(&(lock->cv));
+}
+
+bool lock_is_locked(struct lock_t* lock) {
+    bool locked = pthread_mutex_trylock(&(lock->mutex)) == EBUSY;
+    if (locked) {
+        lock_release(lock);
+    }
+    return locked;
 }

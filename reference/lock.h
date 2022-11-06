@@ -45,3 +45,4 @@ void lock_wait(struct lock_t* lock);
  * @param lock Lock on which other threads are waiting.
 **/
 void lock_wake_up(struct lock_t* lock);
+
