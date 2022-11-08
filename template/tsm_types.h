@@ -6,7 +6,7 @@
 #define CS453_2022_PROJECT_TSM_TYPES_H
 #include "tm.h"
 #include "lock.h"
-#define TSM_WORDS_PER_LOCK 5
+#define TSM_WORDS_PER_LOCK 1
 
 typedef struct lock_node {
     lock_t lock;
@@ -86,6 +86,7 @@ typedef struct Region {
     size_t align;       // Size of a word in the shared memory region (in bytes)
     transaction* transactions; // Linked list of transactions running on this shared memory region
     uint64_t globalVersion; // Global version of the shared memory region
+    lock_t* globalLock; // Global lock to protect region
 } Region;
 
 #endif //CS453_2022_PROJECT_TSM_TYPES_H

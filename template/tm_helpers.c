@@ -2,6 +2,7 @@
 // Created by Aybars Yazici on 6.11.2022.
 //
 
+#include <printf.h>
 #include "tm_helpers.h"
 
 void addReadSet(transaction *pTransaction, segment_node *pSegment, size_t offset, uint64_t version, void *value) {
@@ -91,39 +92,52 @@ lock_t getLock(segment_node *pSegment, size_t offset) {
     // Then the segment will have 3 locks, and the lock at index 0 will protect the words at indices 0 to 4 (inclusive)
     // The lock at index 1 will protect the words at indices 5 to 9 (inclusive)
     // The lock at index 2 will protect the words at indices 10 to 11 (inclusive)
-    return pSegment->locks[offset / TSM_WORDS_PER_LOCK].lock;
+    return (pSegment->locks + offset / TSM_WORDS_PER_LOCK)->lock;
     // Notice how in our previous example all the indexes from 0 to 4 are divided by 5 and the result is 0
     // For indexes 5 to 9, the result is 1, and for indexes 10 to 11, the result is 2, exactly as we want.
 }
 
 uint64_t getVersion(segment_node *pSegment, size_t offset) {
     // Please take a look at getLock() to understand why we are doing this division to get the correct index.
-    return pSegment->locks[offset / TSM_WORDS_PER_LOCK].version;
+    return (pSegment->locks + offset / TSM_WORDS_PER_LOCK)->version;
 }
 
-lock_node getLockNode(segment_node *pSegment, size_t offset) {
+lock_node* getLockNode(segment_node *pSegment, size_t offset) {
     // Please take a look at getLock() to understand why we are doing this division to get the correct index.
-    return pSegment->locks[offset / TSM_WORDS_PER_LOCK];
+    return (pSegment->locks + offset / TSM_WORDS_PER_LOCK);
 }
 
 void sortWriteSet(transaction *pTransaction) {
-    write_set_node * currentWriteSetNode = pTransaction->writeSetHead;
-    write_set_node * nextWriteSetNode = NULL;
-    while(currentWriteSetNode != NULL){
-        nextWriteSetNode = currentWriteSetNode->next;
-        while(nextWriteSetNode != NULL){
-            lock_t currentLock = getLock(currentWriteSetNode->segment,currentWriteSetNode->offset);
-            lock_t nextLock = getLock(nextWriteSetNode->segment,nextWriteSetNode->offset);
-            if(&currentLock > &nextLock){
-                // Swap the write set nodes.
-                write_set_node temp = *currentWriteSetNode;
-                *currentWriteSetNode = *nextWriteSetNode;
-                *nextWriteSetNode = temp;
+    write_set_node *currentWriteSet = pTransaction->writeSetHead;
+    write_set_node *nextWriteSet;
+    while (currentWriteSet != NULL) {
+        nextWriteSet = currentWriteSet->next;
+        while (nextWriteSet != NULL) {
+            lock_t currentLock = getLock(currentWriteSet->segment, currentWriteSet->offset);
+            lock_t nextLock = getLock(nextWriteSet->segment, nextWriteSet->offset);
+            if (&currentLock > &nextLock) {
+                // Swap the values
+                segment_node *tempSegment = currentWriteSet->segment;
+                size_t tempOffset = currentWriteSet->offset;
+                uint64_t tempVersion = currentWriteSet->version;
+                void *tempValue = currentWriteSet->value;
+                void *tempNewValue = currentWriteSet->newValue;
+                currentWriteSet->segment = nextWriteSet->segment;
+                currentWriteSet->offset = nextWriteSet->offset;
+                currentWriteSet->version = nextWriteSet->version;
+                currentWriteSet->value = nextWriteSet->value;
+                currentWriteSet->newValue = nextWriteSet->newValue;
+                nextWriteSet->segment = tempSegment;
+                nextWriteSet->offset = tempOffset;
+                nextWriteSet->version = tempVersion;
+                nextWriteSet->value = tempValue;
+                nextWriteSet->newValue = tempNewValue;
             }
-            nextWriteSetNode = nextWriteSetNode->next;
+            nextWriteSet = nextWriteSet->next;
         }
-        currentWriteSetNode = currentWriteSetNode->next;
+        currentWriteSet = currentWriteSet->next;
     }
+    printf("Write set sorted\n");
 }
 
 void releaseLocks(transaction *pTransaction) {
@@ -131,7 +145,7 @@ void releaseLocks(transaction *pTransaction) {
     while (currentWriteSet != NULL) {
         lock_t lock = getLock(currentWriteSet->segment, currentWriteSet->offset);
         // Release the lock
-        lock_release(&lock);
+        lock_release(&lock, pTransaction->id);
         currentWriteSet = currentWriteSet->next;
     }
 }
@@ -154,7 +168,7 @@ bool acquireLocks(transaction *pTransaction) {
             || currentWriteSet->segment != lastSegment
             || (lastOffset / TSM_WORDS_PER_LOCK) != (currentWriteSet->offset / TSM_WORDS_PER_LOCK)) {
             // Try to acquire the lock
-            if (!lock_acquire(&currentLock)) {
+            if (!lock_acquire(&currentLock, pTransaction->id)) {
                 // If we couldn't acquire the lock, release all the locks we acquired so far
                 releaseLocks(pTransaction);
                 return false;
@@ -214,13 +228,13 @@ void incrementVersion(transaction *pTransaction, shared_t shared) {
     uint64_t globalVersion = region->globalVersion;
     write_set_node *currentWriteSet = pTransaction->writeSetHead;
     while (currentWriteSet != NULL) {
-        lock_node currentLockNode = getLockNode(currentWriteSet->segment, currentWriteSet->offset);
+        lock_node* currentLockNode = getLockNode(currentWriteSet->segment, currentWriteSet->offset);
         // If this is the first lock we are trying to increment the version of, or if the current lock is different from the last lock we incremented the version of
         if (firstLock
             || currentWriteSet->segment != lastSegment
             || (lastOffset / TSM_WORDS_PER_LOCK) != (currentWriteSet->offset / TSM_WORDS_PER_LOCK)) {
             // Atomically set the new version equal to region globalVersion + 1
-            __atomic_store_n(&currentLockNode.version, globalVersion + 1, __ATOMIC_SEQ_CST);
+            __atomic_store_n(&currentLockNode->version, globalVersion + 1, __ATOMIC_SEQ_CST);
             // Update the last lock we incremented the version of
             lastSegment = currentWriteSet->segment;
             lastOffset = currentWriteSet->offset;

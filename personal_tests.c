@@ -28,6 +28,8 @@ void thread1(shared_t shared){
     BankAccount* account4 = (BankAccount*) aligned_alloc(sizeof(BankAccount), sizeof(BankAccount));
     tm_read(shared, tx, sharedRegion + 3*alignment, sizeof(BankAccount),account4);
     tm_end(shared, tx);
+    // Print version number of region
+    printf("Version new new number of region: %llu\n", tm_version(shared));
 
     // Print the balances and names of the accounts
     printf("Account 1: %d, %s\n", account1->balance, account1->name);
@@ -66,6 +68,10 @@ int main(){
     // Write to the shared memory region
     shared_t sharedRegion = tm_start(shared);
     size_t alignment = tm_align(shared);
+
+    // Print version number of region
+    printf("Version number of region: %llu\n", tm_version(shared));
+
     if(tm_write(shared, tx, account1, sizeof(BankAccount), sharedRegion)){
         printf("Account 1 written to the shared memory region\n");
     }
@@ -85,6 +91,8 @@ int main(){
     else{
         printf("Transaction aborted\n");
     }
+    // Print version number of region
+    printf("Version new number of region: %llu\n", tm_version(shared));
     thread1(shared);
 }
 

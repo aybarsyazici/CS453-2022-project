@@ -27,6 +27,7 @@
 #include <tm.h>
 #include <stdlib.h>
 #include <string.h>
+#include <printf.h>
 
 #include "macros.h"
 #include "tsm_types.h"
@@ -81,8 +82,8 @@ shared_t tm_create(size_t size, size_t align) {
         return invalid_shared;
     }
     for (int i = 0; i < firstSegment->lock_size; i++) {
-        lock_init(&((firstSegment->locks[i]).lock));
-        (firstSegment->locks[i]).version = 0;
+        lock_init(&((firstSegment->locks + i)->lock));
+        (firstSegment->locks + i)->version = 0;
     }
     firstSegment->size  = size;
     firstSegment->id    = 0;
@@ -92,6 +93,15 @@ shared_t tm_create(size_t size, size_t align) {
     region->start       = firstSegment->freeSpace;
     region->transactions = NULL; // No transactions yet.
     region->globalVersion = 0;
+    region->globalLock = ((lock_t*) malloc(sizeof(lock_t)));
+    if(unlikely(!region->globalLock)) {
+        free(firstSegment->locks);
+        free(firstSegment->freeSpace);
+        free(firstSegment);
+        free(region);
+        return invalid_shared;
+    }
+    lock_init(region->globalLock);
     return region;
 }
 
@@ -116,6 +126,8 @@ void tm_destroy(shared_t shared) {
         free(currentSegment);
         currentSegment = nextSegment;
     }
+    lock_cleanup(region->globalLock);
+    free(region->globalLock);
     free(region);
 }
 
@@ -163,6 +175,7 @@ tx_t tm_begin(shared_t shared, bool is_ro) {
     newTransaction->version = region->globalVersion; // The transaction starts with the current global version.
     newTransaction->next = NULL; // As this is the newest transaction in the region, it has no next transaction.
     newTransaction->isReadOnly = is_ro;
+    lock_acquire_blocking(region->globalLock,-1);
     // Is this the first transaction of the region?
     if(region->transactions == NULL){
         // If yes, then this transaction is the first transaction of the region.
@@ -177,6 +190,9 @@ tx_t tm_begin(shared_t shared, bool is_ro) {
         region->transactions->next = newTransaction;
         region->transactions = newTransaction;
     }
+    // print transaction id
+    printf("Transaction %d started\n", newTransaction->id);
+    lock_release(region->globalLock,-1); // Release the global lock.
     return newTransaction->id;
 }
 
@@ -264,7 +280,6 @@ bool tm_end(shared_t shared, tx_t tx) {
     }
     // If we reach this point, then the transaction succeeded.
     // Destroy the transaction and free the memory.
-    destroyTransaction(transaction);
     return true;
 }
 
@@ -573,17 +588,22 @@ alloc_t tm_alloc(shared_t shared, tx_t unused(tx), size_t size, void** target) {
         free(newSegment);
         return nomem_alloc;
     }
+    size_t globalVersion = region->globalVersion;
     for (int i = 0; i < newSegment->lock_size; i++) {
         lock_init(&((newSegment->locks + i)->lock));
-        newSegment->locks[i].version = region->globalVersion;
+        newSegment->locks[i].version = globalVersion;
     }
+    // Lock the region, so no other transaction can allocate memory at the same time.
+    lock_acquire_blocking(region->globalLock,-1);
     // Add this segment to the list of segments of the region.
     newSegment->prev = region->allocTail; // The prev pointer of this segment points to the last segment of the region.
-    region->allocTail->next = newSegment; // The next pointer of the last segment of the region points to this segment.
     newSegment->next = NULL; // The next pointer of this segment is NULL. As it is currently the latest segment of the region.
     newSegment->size  = size;
     newSegment->id    = region->allocTail->id + 1;
+    region->allocTail->next = newSegment; // The next pointer of the last segment of the region points to this segment.
     region->allocTail = newSegment; // Latest segment of the region is updated to be this segment.
+    // Unlock the region.
+    lock_release(region->globalLock,-1);
     *target = newSegment->freeSpace;
     return success_alloc;
 }
@@ -597,13 +617,7 @@ alloc_t tm_alloc(shared_t shared, tx_t unused(tx), size_t size, void** target) {
 bool tm_free(shared_t shared, tx_t unused(tx), void* target) {
     // First find the segment node corresponding to the given address.
     Region* region = (Region *) shared;
-    segment_node* currentSegment = region->allocTail;
-    while (currentSegment != NULL) {
-        if (currentSegment->freeSpace == target) {
-            break;
-        }
-        currentSegment = currentSegment->prev;
-    }
+    segment_node* currentSegment = findSegment(region, target);
     if (currentSegment == NULL) {
         return false;
     }
@@ -611,6 +625,8 @@ bool tm_free(shared_t shared, tx_t unused(tx), void* target) {
     if (currentSegment->id == 0) {
         return false;
     }
+    // Lock the region, so no other transaction can allocate memory at the same time.
+    lock_acquire_blocking(region->globalLock,-1);
     // Remove the segment node from the list of segments of the region.
     if (currentSegment->prev != NULL) {
         currentSegment->prev->next = currentSegment->next;
@@ -618,6 +634,7 @@ bool tm_free(shared_t shared, tx_t unused(tx), void* target) {
     if (currentSegment->next != NULL) {
         currentSegment->next->prev = currentSegment->prev;
     }
+    lock_release(region->globalLock,-1);
     // Free the memory buffer.
     free(currentSegment->freeSpace);
     // Cleanup all locks
@@ -627,4 +644,10 @@ bool tm_free(shared_t shared, tx_t unused(tx), void* target) {
     free(currentSegment->locks);
     free(currentSegment);
     return true;
+}
+
+// Return the region version
+uint64_t tm_version(shared_t shared) {
+    Region* region = (Region *) shared;
+    return region->globalVersion;
 }

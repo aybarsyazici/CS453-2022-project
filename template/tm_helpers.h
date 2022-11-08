@@ -89,7 +89,7 @@ uint64_t getVersion(segment_node* pSegment, size_t offset);
  * @param offset The number of alignments from the start of the segment.
  * @return The version number of the word.
  **/
-lock_node getLockNode(segment_node* pSegment, size_t offset);
+lock_node* getLockNode(segment_node* pSegment, size_t offset);
 
 /** This function sorts the write set of the given transaction
  * by increasing order of the address of locks it needs to acquire

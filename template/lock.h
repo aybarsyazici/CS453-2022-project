@@ -10,6 +10,7 @@
 typedef struct lock_t {
     pthread_mutex_t mutex;
     pthread_cond_t cv;
+    size_t holder;
 }lock_t;
 
 /** Initialize the given lock.
@@ -23,16 +24,24 @@ bool lock_init(struct lock_t* lock);
 **/
 void lock_cleanup(struct lock_t* lock);
 
-/** Wait and acquire the given lock.
+/**Acquire the given lock non-blocking.
  * @param lock Lock to acquire
+ * @param holder The thread that is acquiring the lock
  * @return Whether the operation is a success
 **/
-bool lock_acquire(struct lock_t* lock);
+bool lock_acquire(struct lock_t* lock, size_t holder);
 
+/**Wait and acquire the lock, blocking.
+ * @param lock Lock to acquire
+ * @param holder The thread that is acquiring the lock
+ * @return Whether the operation is a success
+**/
+bool lock_acquire_blocking(struct lock_t* lock, size_t holder);
 /** Release the given lock.
  * @param lock Lock to release
+ * @param holder The thread that is releasing the lock
 **/
-void lock_release(struct lock_t* lock);
+void lock_release(struct lock_t* lock, size_t holder);
 
 /** Wait until woken up by a signal on the given lock.
  *  The lock is released until lock_wait completes at which point it is acquired

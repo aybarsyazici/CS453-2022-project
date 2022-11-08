@@ -59,3 +59,4 @@ bool     tm_read(shared_t, tx_t, void const*, size_t, void*);
 bool     tm_write(shared_t, tx_t, void const*, size_t, void*);
 alloc_t  tm_alloc(shared_t, tx_t, size_t, void**);
 bool     tm_free(shared_t, tx_t, void*);
+uint64_t tm_version(shared_t);
