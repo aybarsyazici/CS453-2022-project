@@ -2,6 +2,7 @@
 
 #include <pthread.h>
 #include <stdbool.h>
+#include <stdatomic.h>
 
 /**
  * @brief A lock that can only be taken exclusively. Contrarily to shared locks,
@@ -10,7 +11,7 @@
 typedef struct lock_t {
     pthread_mutex_t mutex;
     pthread_cond_t cv;
-    size_t holder;
+    atomic_uint holder;
 }lock_t;
 
 /** Initialize the given lock.

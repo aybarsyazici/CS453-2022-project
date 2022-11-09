@@ -3,6 +3,7 @@
 #include "lock.h"
 
 bool lock_init(struct lock_t* lock) {
+    lock->holder = 0;
     return pthread_mutex_init(&(lock->mutex), NULL) == 0
         && pthread_cond_init(&(lock->cv), NULL) == 0;
 }
@@ -22,7 +23,7 @@ bool lock_acquire(struct lock_t* lock, size_t holder) {
 
 void lock_release(struct lock_t* lock, size_t holder) {
     if(lock->holder == holder) {
-        lock->holder = -1;
+        lock->holder = 0;
         pthread_mutex_unlock(&(lock->mutex));
     }
 }

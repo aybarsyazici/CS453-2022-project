@@ -126,6 +126,7 @@ bool clearSets(transaction *pTransaction) {
     pTransaction->readSetHead = NULL;
     pTransaction->readSetTail = NULL;
     pTransaction->readSetSize = 0;
+    free(pTransaction);
     return true;
 }
 

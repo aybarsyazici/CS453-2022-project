@@ -82,7 +82,7 @@ typedef struct Region {
     size_t align;       // Size of a word in the shared memory region (in bytes)
     atomic_uint globalVersion; // Global version of the shared memory region
     lock_t* globalLock; // Global lock to protect region
-    size_t latestTransactionId; // Latest transaction id
+    atomic_uint latestTransactionId; // Latest transaction id
 } Region;
 
 
