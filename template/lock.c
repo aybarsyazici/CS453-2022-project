@@ -17,8 +17,7 @@ bool lock_acquire(struct lock_t* lock, size_t holder) {
         lock->holder = holder;
         return true;
     }
-    printf("lock_acquire: failed to acquire lock!!!!, holder: %zu \n", holder);
-    return false;
+    return lock->holder == holder;
 }
 
 void lock_release(struct lock_t* lock, size_t holder) {

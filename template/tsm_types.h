@@ -40,9 +40,7 @@ typedef struct read_set_node {
     struct read_set_node* next; // Pointer to the next read set node
     segment_node* segment; // Pointer to the segment that the read set node is reading from
     size_t offset; // Word that the read set node is reading from, this is the index of the word in the segment
-    shared_t value; // Value that the read set node read from the segment
     // (i.e. how many alignments we read from the start of the segment)
-    uint64_t version; // Version of the word at the time of the reading operation
 } read_set_node;
 
 // Write set node to be used in a transaction
@@ -55,9 +53,7 @@ typedef struct write_set_node {
     segment_node* segment; // Pointer to the segment that the write set node is writing to
     size_t offset; // Word that the write set node is writing to, this is the index of the word in the segment
     // (i.e. how many alignments we wrote to the start of the segment)
-    shared_t value; // Old value of the word at the time of the writing operation
-    shared_t newValue; // Potential new value of the word, this new value is not written to the shared region yet, it will be written at commit time
-    uint64_t version; // Version of the word at the time of the writing operation
+    shared_t value; // new value of the word at the time of the writing operation
 } write_set_node;
 
 

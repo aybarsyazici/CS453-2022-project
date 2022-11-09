@@ -27,10 +27,8 @@ transaction* getTransaction(Region *pRegion, tx_t tx);
  * @param transaction The transaction to add the readSet node to.
  * @param segment The memory segment that we are reading from.
  * @param offset The number of alignments from the start of the segment.
- * @param version The current version of the word that we are reading.
- * @param value The value of the word that we are reading at read time
  **/
-void addReadSet(transaction* pTransaction, segment_node* pSegment, size_t offset, uint64_t version, void* value);
+void addReadSet(transaction* pTransaction, segment_node* pSegment, size_t offset);
 
 /** This function is used to check if a given address is inside the read set of a given transaction.
  * @param shared The shared memory region that the address belongs to.
@@ -51,16 +49,12 @@ segment_node* findSegment(Region* pRegion, void* address);
  * @param transaction The transaction to add the writeSet node to.
  * @param segment The memory segment that we are writing to.
  * @param offset The number of alignments from the start of the segment.
- * @param version The current version of the word that we are writing.
- * @param value The value of the word that we are writing.
- * @param newValue The new value of the word that we are writing.
+ * @param value The new value of the word that we are writing.
  **/
 void addWriteSet(transaction* pTransaction,
                  segment_node* pSegment,
                  size_t offset,
-                 uint64_t version,
-                 void* value,
-                 void* newValue);
+                 void* value);
 
 /** This function is used to check if a given address is inside the write set of a given transaction.
  * @param shared The shared memory region that the address belongs to.

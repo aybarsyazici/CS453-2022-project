@@ -5,12 +5,10 @@
 #include <printf.h>
 #include "tm_helpers.h"
 
-void addReadSet(transaction *pTransaction, segment_node *pSegment, size_t offset, uint64_t version, void *value) {
+void addReadSet(transaction *pTransaction, segment_node *pSegment, size_t offset) {
     read_set_node * newReadSet = (read_set_node *) malloc(sizeof(read_set_node)); // Create a new readSet node
     newReadSet->segment = pSegment; // Which segment we read from
     newReadSet->offset = offset; // Set the offset(how many words away from the start of the segment)
-    newReadSet->version = version; // The version at the time of reading
-    newReadSet->value = value; // The value we read
     newReadSet->next = NULL; // The next is NULL as this is the newest node
     if (pTransaction->readSetHead == NULL) { // If the head is NULL, then this is the first node
         pTransaction->readSetHead = newReadSet;
@@ -50,14 +48,11 @@ segment_node *findSegment(Region *pRegion, void *address) {
     return NULL;
 }
 
-void addWriteSet(transaction *pTransaction, segment_node *pSegment, size_t offset, uint64_t version, void *value,
-                 void *newValue) {
+void addWriteSet(transaction *pTransaction, segment_node *pSegment, size_t offset, void *value) {
     write_set_node *newWriteSet = (write_set_node *) malloc(sizeof(write_set_node));
     newWriteSet->segment = pSegment;
     newWriteSet->offset = offset;
-    newWriteSet->version = version;
     newWriteSet->value = value;
-    newWriteSet->newValue = newValue;
     newWriteSet->next = NULL;
     if (pTransaction->writeSetHead == NULL) {
         pTransaction->writeSetHead = newWriteSet;
@@ -113,7 +108,6 @@ bool clearSets(transaction *pTransaction) {
     write_set_node *nextWriteSet;
     while (currentWriteSet != NULL) {
         nextWriteSet = currentWriteSet->next;
-        free(currentWriteSet->newValue);
         free(currentWriteSet->value);
         free(currentWriteSet);
         currentWriteSet = nextWriteSet;
@@ -126,7 +120,6 @@ bool clearSets(transaction *pTransaction) {
     read_set_node *nextReadSet;
     while (currentReadSet != NULL) {
         nextReadSet = currentReadSet->next;
-        free(currentReadSet->value);
         free(currentReadSet);
         currentReadSet = nextReadSet;
     }
@@ -190,9 +183,9 @@ void releaseLocks_naive(transaction *pTransaction) {
     write_set_node *pWriteSetNode = pTransaction->writeSetHead;
     while (pWriteSetNode != NULL) {
         // Get the lock for the current write set node
-        lock_t *pLock = getLock(pWriteSetNode->segment, pWriteSetNode->offset);
+        lock_node* lockNode = getLockNode(pWriteSetNode->segment, pWriteSetNode->offset);
         // Release the lock
-        lock_release(pLock, pTransaction->id);
+        lock_release(&lockNode->lock, pTransaction->id);
         // Move to the next write set node
         pWriteSetNode = pWriteSetNode->next;
     }
@@ -203,9 +196,9 @@ bool acquireLocks_naive(transaction *pTransaction) {
     write_set_node* pWriteSetNode = pTransaction->writeSetHead;
     while(pWriteSetNode != NULL){
         // Get the lock for the current write set node
-        lock_t* pLock = getLock(pWriteSetNode->segment, pWriteSetNode->offset);
+        lock_node* lockNode = getLockNode(pWriteSetNode->segment, pWriteSetNode->offset);
         // Try to acquire the lock
-        if(!lock_acquire(pLock, pTransaction->id)){
+        if(!lock_acquire(&lockNode->lock, pTransaction->id)){
             // If we failed to acquire the lock, release all the locks we acquired so far
             releaseLocks_naive(pTransaction);
             return false;
