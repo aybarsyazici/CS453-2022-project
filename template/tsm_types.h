@@ -4,13 +4,15 @@
 
 #ifndef CS453_2022_PROJECT_TSM_TYPES_H
 #define CS453_2022_PROJECT_TSM_TYPES_H
+
+#include <stdatomic.h>
 #include "tm.h"
 #include "lock.h"
 #define TSM_WORDS_PER_LOCK 1
 
 typedef struct lock_node {
     lock_t lock;
-    uint64_t version;
+    atomic_uint version;
 } lock_node;
 
 typedef struct segment_node {
@@ -67,15 +69,13 @@ typedef struct write_set_node {
 // A transaction can be aborted or committed.
 typedef struct transaction{
     size_t id; // Unique transaction id
-    uint64_t version; // Global version at the time of the transaction start
+    unsigned int version; // Global version at the time of the transaction start
     read_set_node* readSetHead; // Pointer pointing to the first of the read set nodes
     read_set_node* readSetTail; // Pointer pointing to the last of the read set nodes
     write_set_node* writeSetHead; // Pointer pointing to the first of the write set nodes
     write_set_node* writeSetTail; // Pointer pointing to the last of the write set nodes
-    uint64_t readSetSize; // Size of the read set
-    uint64_t writeSetSize; // Size of the write set
-    struct transaction* next; // Pointer to the next transaction
-    struct transaction* prev; // Pointer to the previous transaction
+    int readSetSize; // Size of the read set
+    int writeSetSize; // Size of the write set
     bool isReadOnly; // Boolean to check if the transaction is read only or not
 } transaction;
 
@@ -84,9 +84,10 @@ typedef struct Region {
     segment_node* allocHead; // Pointer pointing to the first of the shared memory segments dynamically allocated via tm_alloc within transactions
     segment_node* allocTail; // Pointer pointing to the last of the shared memory segments dynamically allocated via tm_alloc within transactions
     size_t align;       // Size of a word in the shared memory region (in bytes)
-    transaction* transactions; // Linked list of transactions running on this shared memory region
-    uint64_t globalVersion; // Global version of the shared memory region
+    atomic_uint globalVersion; // Global version of the shared memory region
     lock_t* globalLock; // Global lock to protect region
+    size_t latestTransactionId; // Latest transaction id
 } Region;
+
 
 #endif //CS453_2022_PROJECT_TSM_TYPES_H

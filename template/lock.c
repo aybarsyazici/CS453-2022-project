@@ -1,4 +1,5 @@
 #include <sys/errno.h>
+#include <printf.h>
 #include "lock.h"
 
 bool lock_init(struct lock_t* lock) {
@@ -16,6 +17,7 @@ bool lock_acquire(struct lock_t* lock, size_t holder) {
         lock->holder = holder;
         return true;
     }
+    printf("lock_acquire: failed to acquire lock!!!!, holder: %zu \n", holder);
     return false;
 }
 
@@ -48,4 +50,8 @@ bool lock_acquire_blocking(struct lock_t* lock, size_t holder) {
         return true;
     }
     return false;
+}
+
+bool lock_is_locked_byAnotherThread(struct lock_t *lock, size_t holder) {
+    return lock->holder != holder && lock_is_locked(lock);
 }

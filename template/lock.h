@@ -61,3 +61,11 @@ void lock_wake_up(struct lock_t* lock);
  * @return Whether the lock is locked
 **/
 bool lock_is_locked(struct lock_t* lock);
+
+
+/** This function is used to check if the current thread holds the given lock.
+ * @param lock Lock to check
+ * @param holder The thread that is checking the lock
+ * @return Whether the current thread holds the lock
+**/
+bool lock_is_locked_byAnotherThread(struct lock_t* lock, size_t holder);

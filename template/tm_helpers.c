@@ -85,102 +85,26 @@ write_set_node *checkWriteSet(Region *pRegion, transaction *pTransaction, void *
     return NULL;
 }
 
-lock_t getLock(segment_node *pSegment, size_t offset) {
+lock_t* getLock(segment_node *pSegment, size_t offset) {
     // Remember that each segment has one lock per TSM_WORDS_PER_LOCK words.
     // the lock at index 'i' protects the words at indices i * TSM_WORDS_PER_LOCK to (i + 1) * TSM_WORDS_PER_LOCK - 1 (inclusive.)
     // But imagine the segment has 12 words and TSM_WORDS_PER_LOCK is 5
     // Then the segment will have 3 locks, and the lock at index 0 will protect the words at indices 0 to 4 (inclusive)
     // The lock at index 1 will protect the words at indices 5 to 9 (inclusive)
     // The lock at index 2 will protect the words at indices 10 to 11 (inclusive)
-    return (pSegment->locks + offset / TSM_WORDS_PER_LOCK)->lock;
+    return &((pSegment->locks + offset / TSM_WORDS_PER_LOCK)->lock);
     // Notice how in our previous example all the indexes from 0 to 4 are divided by 5 and the result is 0
     // For indexes 5 to 9, the result is 1, and for indexes 10 to 11, the result is 2, exactly as we want.
 }
 
-uint64_t getVersion(segment_node *pSegment, size_t offset) {
+atomic_uint* getVersion(segment_node *pSegment, size_t offset) {
     // Please take a look at getLock() to understand why we are doing this division to get the correct index.
-    return (pSegment->locks + offset / TSM_WORDS_PER_LOCK)->version;
+    return &((pSegment->locks + offset / TSM_WORDS_PER_LOCK)->version);
 }
 
 lock_node* getLockNode(segment_node *pSegment, size_t offset) {
     // Please take a look at getLock() to understand why we are doing this division to get the correct index.
     return (pSegment->locks + offset / TSM_WORDS_PER_LOCK);
-}
-
-void sortWriteSet(transaction *pTransaction) {
-    write_set_node *currentWriteSet = pTransaction->writeSetHead;
-    write_set_node *nextWriteSet;
-    while (currentWriteSet != NULL) {
-        nextWriteSet = currentWriteSet->next;
-        while (nextWriteSet != NULL) {
-            lock_t currentLock = getLock(currentWriteSet->segment, currentWriteSet->offset);
-            lock_t nextLock = getLock(nextWriteSet->segment, nextWriteSet->offset);
-            if (&currentLock > &nextLock) {
-                // Swap the values
-                segment_node *tempSegment = currentWriteSet->segment;
-                size_t tempOffset = currentWriteSet->offset;
-                uint64_t tempVersion = currentWriteSet->version;
-                void *tempValue = currentWriteSet->value;
-                void *tempNewValue = currentWriteSet->newValue;
-                currentWriteSet->segment = nextWriteSet->segment;
-                currentWriteSet->offset = nextWriteSet->offset;
-                currentWriteSet->version = nextWriteSet->version;
-                currentWriteSet->value = nextWriteSet->value;
-                currentWriteSet->newValue = nextWriteSet->newValue;
-                nextWriteSet->segment = tempSegment;
-                nextWriteSet->offset = tempOffset;
-                nextWriteSet->version = tempVersion;
-                nextWriteSet->value = tempValue;
-                nextWriteSet->newValue = tempNewValue;
-            }
-            nextWriteSet = nextWriteSet->next;
-        }
-        currentWriteSet = currentWriteSet->next;
-    }
-    printf("Write set sorted\n");
-}
-
-void releaseLocks(transaction *pTransaction) {
-    write_set_node *currentWriteSet = pTransaction->writeSetHead;
-    while (currentWriteSet != NULL) {
-        lock_t lock = getLock(currentWriteSet->segment, currentWriteSet->offset);
-        // Release the lock
-        lock_release(&lock, pTransaction->id);
-        currentWriteSet = currentWriteSet->next;
-    }
-}
-
-bool acquireLocks(transaction *pTransaction) {
-    // What we should watch out for is that multiple nodes may be trying to acquire the same lock.
-    // This is because one lock may protect multiple words in the same segment.
-    // So we need to make sure that we only acquire a lock once.
-    // We do this by keeping the track of the last segment and offset we acquired a lock for.
-    // If the current segment and offset are the same as the last one, we skip acquiring the lock.
-    segment_node* lastSegment;
-    size_t lastOffset;
-    bool firstLock = true;
-
-    write_set_node *currentWriteSet = pTransaction->writeSetHead;
-    while (currentWriteSet != NULL) {
-        lock_t currentLock = getLock(currentWriteSet->segment, currentWriteSet->offset);
-        // If this is the first lock we are trying to acquire, or if the current lock is different from the last lock we acquired
-        if (firstLock
-            || currentWriteSet->segment != lastSegment
-            || (lastOffset / TSM_WORDS_PER_LOCK) != (currentWriteSet->offset / TSM_WORDS_PER_LOCK)) {
-            // Try to acquire the lock
-            if (!lock_acquire(&currentLock, pTransaction->id)) {
-                // If we couldn't acquire the lock, release all the locks we acquired so far
-                releaseLocks(pTransaction);
-                return false;
-            }
-            // Update the last lock we acquired
-            lastSegment = currentWriteSet->segment;
-            lastOffset = currentWriteSet->offset;
-            firstLock = false;
-        }
-        currentWriteSet = currentWriteSet->next;
-    }
-    return true;
 }
 
 bool clearSets(transaction *pTransaction) {
@@ -212,54 +136,82 @@ bool clearSets(transaction *pTransaction) {
     return true;
 }
 
-void incrementVersion(transaction *pTransaction, shared_t shared) {
-    // What we should watch out for is that multiple nodes may be trying to increment the version of the same lock.
-    // This is because one lock may protect multiple words in the same segment.
-    // So we need to make sure that we only increment the version of a lock once.
-    // We do this by keeping the track of the last segment and offset we incremented the version of.
-    // If the current segment and offset are the same as the last one, we skip incrementing the version.
-    segment_node* lastSegment;
-    size_t lastOffset;
-    bool firstLock = true;
-    Region *region = (Region *)shared;
-    if(unlikely(region == NULL)){
-        return;
-    }
-    uint64_t globalVersion = region->globalVersion;
-    write_set_node *currentWriteSet = pTransaction->writeSetHead;
-    while (currentWriteSet != NULL) {
-        lock_node* currentLockNode = getLockNode(currentWriteSet->segment, currentWriteSet->offset);
-        // If this is the first lock we are trying to increment the version of, or if the current lock is different from the last lock we incremented the version of
-        if (firstLock
-            || currentWriteSet->segment != lastSegment
-            || (lastOffset / TSM_WORDS_PER_LOCK) != (currentWriteSet->offset / TSM_WORDS_PER_LOCK)) {
-            // Atomically set the new version equal to region globalVersion + 1
-            __atomic_store_n(&currentLockNode->version, globalVersion + 1, __ATOMIC_SEQ_CST);
-            // Update the last lock we incremented the version of
-            lastSegment = currentWriteSet->segment;
-            lastOffset = currentWriteSet->offset;
-            firstLock = false;
-        }
-        currentWriteSet = currentWriteSet->next;
-    }
-}
-
-void destroyTransaction(transaction *pTransaction) {
-    // Release all the locks associated with the transaction
-    releaseLocks(pTransaction);
-    // Clear the read and write sets
-    clearSets(pTransaction);
-    // Free the transaction
-    free(pTransaction);
-}
-
 transaction *getTransaction(Region *pRegion, tx_t tx) {
-    transaction* currentTransaction = pRegion->transactions;
-    while (currentTransaction != NULL) {
-        if (currentTransaction->id == tx) {
-            return currentTransaction;
-        }
-        currentTransaction = currentTransaction->prev;
+    return (transaction *)tx;
+}
+
+lock_t** getLocks(transaction *pTransaction) {
+    lock_t** locks = (lock_t**)malloc(sizeof(lock_t*) * pTransaction->writeSetSize);
+    write_set_node *current = pTransaction->writeSetHead;
+    for (int i = 0; i < pTransaction->writeSetSize; i++) {
+        locks[i] = getLock(current->segment, current->offset);
+        current = current->next;
     }
-    return NULL;
+    // sort locks by increasing order of the address
+    qsort(locks, pTransaction->writeSetSize, sizeof(lock_t*), compareLocks);
+    return locks;
+}
+
+bool acquireLocks(lock_t** locks, int size, size_t transactionId) {
+    for (int i = 0; i < size; i++) {
+        if (!lock_acquire(locks[i], transactionId)) {
+            // failed to acquire a lock, release all the locks it has acquired so far
+            for (int j = 0; j < i; j++) {
+                lock_release(locks[j],transactionId);
+            }
+            return false;
+        }
+    }
+    return true;
+}
+
+void releaseLocks(lock_t** locks, size_t size, size_t transactionId) {
+    for (int i = 0; i < size; i++) {
+        lock_release(locks[i], transactionId);
+    }
+}
+
+int compareLocks(const void *a, const void *b) {
+    lock_t** lock1 = (lock_t **)a;
+    lock_t** lock2 = (lock_t **)b;
+    if(&((*lock1)->mutex) < &((*lock2)->mutex)){
+        return -1;
+    }
+    else if(&((*lock1)->mutex) > &((*lock2)->mutex)){
+        return 1;
+    }
+    else{
+        return 0;
+    }
+}
+
+void releaseLocks_naive(transaction *pTransaction) {
+    // Iterate over the write set
+    write_set_node *pWriteSetNode = pTransaction->writeSetHead;
+    while (pWriteSetNode != NULL) {
+        // Get the lock for the current write set node
+        lock_t *pLock = getLock(pWriteSetNode->segment, pWriteSetNode->offset);
+        // Release the lock
+        lock_release(pLock, pTransaction->id);
+        // Move to the next write set node
+        pWriteSetNode = pWriteSetNode->next;
+    }
+}
+
+bool acquireLocks_naive(transaction *pTransaction) {
+    // Iterate over the write set
+    write_set_node* pWriteSetNode = pTransaction->writeSetHead;
+    while(pWriteSetNode != NULL){
+        // Get the lock for the current write set node
+        lock_t* pLock = getLock(pWriteSetNode->segment, pWriteSetNode->offset);
+        // Try to acquire the lock
+        if(!lock_acquire(pLock, pTransaction->id)){
+            // If we failed to acquire the lock, release all the locks we acquired so far
+            releaseLocks_naive(pTransaction);
+            return false;
+        }
+        // Move to the next write set node
+        pWriteSetNode = pWriteSetNode->next;
+    }
+    return true;
 }

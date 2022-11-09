@@ -75,14 +75,14 @@ write_set_node* checkWriteSet(Region* pRegion, transaction* pTransaction, void* 
  * @param offset The number of alignments from the start of the segment.
  * @return The lock associated with the memory location.
  **/
-lock_t getLock(segment_node* pSegment, size_t offset);
+lock_t* getLock(segment_node* pSegment, size_t offset);
 
 /** This function is used to get the version number of a word in a given segment.
  * @param segment The segment to get the version number from.
  * @param offset The number of alignments from the start of the segment.
  * @return The version number of the word.
  **/
-uint64_t getVersion(segment_node* pSegment, size_t offset);
+atomic_uint* getVersion(segment_node* pSegment, size_t offset);
 
 /** This function is used to get the lock node of a word in a given segment.
  * @param segment The segment to get the version number from.
@@ -91,51 +91,51 @@ uint64_t getVersion(segment_node* pSegment, size_t offset);
  **/
 lock_node* getLockNode(segment_node* pSegment, size_t offset);
 
-/** This function sorts the write set of the given transaction
- * by increasing order of the address of locks it needs to acquire
- * @param pTransaction pointer to the transaction
+/** This function naively releases the locks for the transaction given
+ * @param transaction The transaction to release the locks for.
  * @return void
+ * */
+void releaseLocks_naive(transaction* pTransaction);
+
+/** This function naively get's the locks for the transaction given
+ * @param transaction The transaction to get the locks for.
+ * @return true if the locks were acquired, false otherwise.
 **/
+bool acquireLocks_naive(transaction* pTransaction);
 
-void sortWriteSet(transaction *pTransaction);
-
-/** This function is used to release all the locks of the given transaction
- * We once again assume the write set is already sorted by increasing order of the address of locks.
- * @param pTransaction The transaction to release the locks of.
+/** This function is used to release all the locks in the given array of locks
+ * @param locks The array of locks to release.
+ * @param size The size of the array of locks.
+ * @param transactionId The id of the transaction that is releasing the locks.
  * @return void
  **/
-void releaseLocks(transaction* pTransaction);
+void releaseLocks(lock_t** locks, size_t size, size_t transactionId);
+
+int compareLocks(const void *a, const void *b);
+
+/** This function given a transaction returns the array of locks it needs to acquire
+ * the array is sorted by increasing order of the address of locks
+ * @param pTransaction pointer to the transaction
+ * @return array of locks
+**/
+lock_t** getLocks(transaction *pTransaction);
 
 
-/** This function is used to acquire the locks associated with the write set of a given transaction.
- * We assume that the given transaction's write set
- * is sorted by increasing order of the address of locks it needs to acquire
- * @param transaction The transaction to acquire the locks for.
- * @return true if the locks were acquired successfully, or false if the locks couldn't be acquired.
+/** This function given an array of lock nodes, tries to acquire all the locks in the array
+ * If failed to acquire a lock, it releases all the locks it has acquired so far
+ * @param locks array of locks
+ * @param size size of the array
+ * @param transactionId id of the transaction
+ * @return true if all locks are acquired, false otherwise
  **/
-bool acquireLocks(transaction* pTransaction);
+bool acquireLocks(lock_t** locks, int size, size_t transactionId);
+
 
 /** This function clears the read and write sets of the given transaction.
  * @param transaction The transaction to clear the read and write sets of.
  * @return true if the read and write sets were cleared successfully, or false if they couldn't be cleared.
  **/
 bool clearSets(transaction* pTransaction);
-
-/** This function is used to increment the version of all lock nodes corresponding to the write set of a given transaction.
- * We assume that the given transaction's write set
- * is sorted by increasing order of the address of locks it needs to acquire
- * @param transaction The transaction to increment the version of.
- * @param shared The region the transaction belongs to
- * @return void
- **/
-void incrementVersion(transaction* pTransaction, shared_t shared);
-
-/** This function is used to destroy given transaction. It releases all the locks associated with the transaction,
- * clears the read and write sets, and frees the transaction.
- * @param transaction The transaction to destroy.
- * @return void
-**/
-void destroyTransaction(transaction* pTransaction);
 
 /**
  ***************************************************************************************
