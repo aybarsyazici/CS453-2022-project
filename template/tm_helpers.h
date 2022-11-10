@@ -6,6 +6,7 @@
 #define CS453_2022_PROJECT_TM_HELPERS_H
 #include "tsm_types.h"
 #include "macros.h"
+#include "bloom.h"
 #include <stdlib.h>
 #endif //CS453_2022_PROJECT_TM_HELPERS_H
 
@@ -50,11 +51,14 @@ segment_node* findSegment(Region* pRegion, void* address);
  * @param segment The memory segment that we are writing to.
  * @param offset The number of alignments from the start of the segment.
  * @param value The new value of the word that we are writing.
+ * @param align The alignment/size of the word that we are writing.
  **/
 void addWriteSet(transaction* pTransaction,
                  segment_node* pSegment,
                  size_t offset,
-                 void* value);
+                 void* value,
+                 int align
+                 );
 
 /** This function is used to check if a given address is inside the write set of a given transaction.
  * @param shared The shared memory region that the address belongs to.

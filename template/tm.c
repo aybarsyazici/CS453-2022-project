@@ -32,6 +32,7 @@
 #include "macros.h"
 #include "tsm_types.h"
 #include "tm_helpers.h"
+
 /** Create (i.e. allocate + init) a new shared memory region, with one first non-free-able allocated segment of the requested size and alignment.
  * @param size  Size of the first shared segment of memory to allocate (in bytes), must be a positive multiple of the alignment
  * @param align Alignment (in bytes, must be a power of 2) that the shared memory region must support
@@ -87,6 +88,7 @@ shared_t tm_create(size_t size, size_t align) {
     }
     firstSegment->size  = size;
     firstSegment->id    = 0;
+    firstSegment->align = align;
     region->allocHead      = firstSegment; // The region starts with one non-deletable segment.
     region->allocTail      = firstSegment; // The region starts with one non-deletable segment.
     region->align       = align;
@@ -109,9 +111,6 @@ shared_t tm_create(size_t size, size_t align) {
  * @param shared Shared memory region to destroy, with no running transaction
 **/
 void tm_destroy(shared_t shared) {
-    if (unlikely(!shared)) {
-        return;
-    }
     Region* region = (Region *) shared;
     // Free all the segments of the region.
     segment_node* currentSegment = region->allocHead;
@@ -176,6 +175,9 @@ tx_t tm_begin(shared_t shared, bool is_ro) {
     newTransaction->isReadOnly = is_ro;
     // Fetch and increment the latest transaction id
     newTransaction->id = ++region->latestTransactionId;
+    newTransaction->writeSetBloom = (bloom*)malloc(sizeof(bloom));
+    bloom_init2(newTransaction->writeSetBloom, 100000, 0.01);
+    //newTransaction->readSetMap = cfuhash_new();
     return (tx_t)newTransaction;
 }
 
@@ -186,13 +188,7 @@ tx_t tm_begin(shared_t shared, bool is_ro) {
 **/
 bool tm_end(shared_t shared, tx_t tx) {
     Region* region = (Region *) shared;
-    if(unlikely(!region)) {
-        return false;
-    }
     transaction* transaction = getTransaction(region, tx);
-    if(unlikely(!transaction)) {
-        return false;
-    }
     if(!transaction->isReadOnly){
         // Apply Transactional Locking 2 checks
         // Acquire locks on all the addresses in the writeSet.
@@ -274,7 +270,7 @@ bool tm_read(shared_t shared, tx_t tx, void const* source, size_t size, void* ta
 
         write_set_node* writeSetNode = NULL;
 
-        void* value = aligned_alloc(region->align,region->align);
+        void* value = aligned_alloc(region->align, region->align);
         if(value == NULL){
             clearSets(transaction);
             return false;
@@ -302,6 +298,7 @@ bool tm_read(shared_t shared, tx_t tx, void const* source, size_t size, void* ta
         }
         if(version != lockNode->version){
             clearSets(transaction);
+            free(value);
             return false;
         }
         if (lock_is_locked(&lockNode->lock)) {
@@ -314,15 +311,11 @@ bool tm_read(shared_t shared, tx_t tx, void const* source, size_t size, void* ta
             free(value);
             return false;
         }
-        if (lock_is_locked(&lockNode->lock)) {
-            clearSets(transaction);
-            free(value);
-            return false;
-        }
         // Then we need to add the read set node to the read set.
         addReadSet(transaction, segment, offset);
         // Finally, we copy the value/word we have read to the target memory location.
         memcpy(currentTarget, value, region->align);
+        free(value);
     }
     return true;
 }
@@ -366,7 +359,7 @@ bool tm_write(shared_t shared, tx_t tx, void const* source, size_t size, void* t
         // If no, then we need to write from the shared memory, as it is the first time we are trying to write to this memory location.
         // First we need to find the offset, i.e. how many words down we are from the current segment.
         size_t offset = (size_t) ((void*) currentTarget - segment->freeSpace) / region->align;
-        void* value = aligned_alloc(region->align,region->align);
+        void* value = aligned_alloc(region->align, region->align);
         if(value == NULL){
             // If the malloc fails, then we return false.
             clearSets(transaction);
@@ -374,7 +367,7 @@ bool tm_write(shared_t shared, tx_t tx, void const* source, size_t size, void* t
         }
         memcpy(value, currentSource, region->align);
         // Then we need to add the write set node to the transaction.
-        addWriteSet(transaction, segment, offset, value);
+        addWriteSet(transaction, segment, offset, value, (int)region->align);
     }
     return true;
 }
@@ -398,7 +391,7 @@ alloc_t tm_alloc(shared_t shared, tx_t unused(tx), size_t size, void** target) {
         return nomem_alloc;
     }
     // Allocate memory for the segment with given alignment and size
-    if (posix_memalign(&(newSegment->freeSpace), region->align, size) != 0) {
+    if (posix_memalign(newSegment->freeSpace, region->align, size) != 0) {
         free(newSegment);
         return nomem_alloc;
     }

@@ -8,6 +8,8 @@
 #include <stdatomic.h>
 #include "tm.h"
 #include "lock.h"
+#include "bloom.h"
+
 #define TSM_WORDS_PER_LOCK 1
 
 typedef struct lock_node {
@@ -20,6 +22,7 @@ typedef struct segment_node {
     struct segment_node* next; // Pointer to the next segment
     shared_t freeSpace; // Free space to be returned to the user where he can write or read concurrently
     size_t size; // Size of the freeSpace in bytes
+    size_t align; // Alignment of the freeSpace in bytes
     uint64_t id; // Id of the current segment
     // Each segment needs to keep a version number for each word in the segment
     // The size of a word is decided by the user when he creates the shared memory region
@@ -54,6 +57,7 @@ typedef struct write_set_node {
     size_t offset; // Word that the write set node is writing to, this is the index of the word in the segment
     // (i.e. how many alignments we wrote to the start of the segment)
     shared_t value; // new value of the word at the time of the writing operation
+    uint64_t address;
 } write_set_node;
 
 
@@ -70,6 +74,7 @@ typedef struct transaction{
     read_set_node* readSetTail; // Pointer pointing to the last of the read set nodes
     write_set_node* writeSetHead; // Pointer pointing to the first of the write set nodes
     write_set_node* writeSetTail; // Pointer pointing to the last of the write set nodes
+    bloom* writeSetBloom;
     int readSetSize; // Size of the read set
     int writeSetSize; // Size of the write set
     bool isReadOnly; // Boolean to check if the transaction is read only or not
@@ -84,6 +89,5 @@ typedef struct Region {
     lock_t* globalLock; // Global lock to protect region
     atomic_uint latestTransactionId; // Latest transaction id
 } Region;
-
 
 #endif //CS453_2022_PROJECT_TSM_TYPES_H

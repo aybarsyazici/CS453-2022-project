@@ -3,6 +3,7 @@
 //
 
 #include <printf.h>
+#include <string.h>
 #include "tm_helpers.h"
 
 void addReadSet(transaction *pTransaction, segment_node *pSegment, size_t offset) {
@@ -20,6 +21,8 @@ void addReadSet(transaction *pTransaction, segment_node *pSegment, size_t offset
         pTransaction->readSetTail = newReadSet;
         pTransaction->readSetSize++;
     }
+    uint64_t key = (uint64_t) pSegment->freeSpace + offset * pSegment->align; // Create the key for the bloom filter
+    //cfuhash_put_data(pTransaction->readSetMap, &key, sizeof(uint64_t),newReadSet, sizeof(read_set_node), NULL);
 }
 
 read_set_node *checkReadSet(Region *pRegion, transaction *pTransaction, void *address) {
@@ -48,12 +51,15 @@ segment_node *findSegment(Region *pRegion, void *address) {
     return NULL;
 }
 
-void addWriteSet(transaction *pTransaction, segment_node *pSegment, size_t offset, void *value) {
+void addWriteSet(transaction *pTransaction, segment_node *pSegment, size_t offset, void *value, int align) {
     write_set_node *newWriteSet = (write_set_node *) malloc(sizeof(write_set_node));
     newWriteSet->segment = pSegment;
     newWriteSet->offset = offset;
     newWriteSet->value = value;
+    newWriteSet->address = (uint64_t) &(*(pSegment->freeSpace + offset * align));
     newWriteSet->next = NULL;
+    // Add to bloom filter
+    bloom_add(pTransaction->writeSetBloom, &newWriteSet->address, sizeof(shared_t));
     if (pTransaction->writeSetHead == NULL) {
         pTransaction->writeSetHead = newWriteSet;
         pTransaction->writeSetTail = newWriteSet;
@@ -66,13 +72,18 @@ void addWriteSet(transaction *pTransaction, segment_node *pSegment, size_t offse
 }
 
 write_set_node *checkWriteSet(Region *pRegion, transaction *pTransaction, void *address) {
+    // Check if address is in bloom filter
+    uint64_t toCheck = ((uint64_t)&(*address));
+    if (!bloom_check(pTransaction->writeSetBloom, &toCheck, sizeof(uint64_t))) {
+        return NULL;
+    }
     write_set_node *currentWriteSet = pTransaction->writeSetHead;
     while (currentWriteSet != NULL) {
         // Each write set node contains which segment it wrote to and the offset from the start of the segment
         // Note that the offset is kept in terms of alignments(i.e. words), not bytes
         // So to check if this current write set node wrote to the address we are looking for,
         // we need to add the offset to the start of the segment and check if it is equal to the address.
-        if (currentWriteSet->segment->freeSpace + currentWriteSet->offset * pRegion->align == address) {
+        if (currentWriteSet->address == (uint64_t)&(*address)) {
             return currentWriteSet;
         }
         currentWriteSet = currentWriteSet->next;
@@ -115,6 +126,8 @@ bool clearSets(transaction *pTransaction) {
     pTransaction->writeSetHead = NULL;
     pTransaction->writeSetTail = NULL;
     pTransaction->writeSetSize = 0;
+    bloom_free(pTransaction->writeSetBloom);
+    free(pTransaction->writeSetBloom);
     // Now clear the read set
     read_set_node *currentReadSet = pTransaction->readSetHead;
     read_set_node *nextReadSet;

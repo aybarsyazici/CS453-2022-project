@@ -262,13 +262,14 @@ int main(int argc, char** argv) {
             return 1;
         }
         // Get/set/compute run parameters
-        auto const nbworkers = []() {
+        auto nbworkers = []() {
             auto res = ::std::thread::hardware_concurrency();
             if (unlikely(res == 0))
                 res = 16;
             return static_cast<size_t>(res);
         }();
-        auto const nbtxperwrk    = 200000ul / nbworkers;
+        nbworkers = 16;
+        auto const nbtxperwrk    = (200000ul / nbworkers)*4;
         auto const nbaccounts    = 32 * nbworkers;
         auto const expnbaccounts = 256 * nbworkers;
         auto const init_balance  = 100ul;
