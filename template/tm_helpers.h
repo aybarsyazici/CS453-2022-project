@@ -29,7 +29,7 @@ transaction* getTransaction(Region *pRegion, tx_t tx);
  * @param segment The memory segment that we are reading from.
  * @param offset The number of alignments from the start of the segment.
  **/
-void addReadSet(transaction* pTransaction, segment_node* pSegment, size_t offset);
+void addReadSet(transaction* pTransaction, segment_node* pSegment, unsigned long offset);
 
 /** This function is used to check if a given address is inside the read set of a given transaction.
  * @param shared The shared memory region that the address belongs to.
@@ -55,9 +55,9 @@ segment_node* findSegment(Region* pRegion, void* address);
  **/
 void addWriteSet(transaction* pTransaction,
                  segment_node* pSegment,
-                 size_t offset,
+                 unsigned long offset,
                  void* value,
-                 int align
+                 unsigned long align
                  );
 
 /** This function is used to check if a given address is inside the write set of a given transaction.
@@ -73,21 +73,21 @@ write_set_node* checkWriteSet(Region* pRegion, transaction* pTransaction, void* 
  * @param offset The number of alignments from the start of the segment.
  * @return The lock associated with the memory location.
  **/
-lock_t* getLock(segment_node* pSegment, size_t offset);
+lock_t* getLock(segment_node* pSegment, unsigned long offset);
 
 /** This function is used to get the version number of a word in a given segment.
  * @param segment The segment to get the version number from.
  * @param offset The number of alignments from the start of the segment.
  * @return The version number of the word.
  **/
-atomic_ulong* getVersion(segment_node* pSegment, size_t offset);
+atomic_ulong* getVersion(segment_node* pSegment, unsigned long offset);
 
 /** This function is used to get the lock node of a word in a given segment.
  * @param segment The segment to get the version number from.
  * @param offset The number of alignments from the start of the segment.
  * @return The version number of the word.
  **/
-lock_node* getLockNode(segment_node* pSegment, size_t offset);
+lock_node* getLockNode(segment_node* pSegment, unsigned long offset);
 
 /** This function naively releases the locks for the transaction given
  * @param transaction The transaction to release the locks for.
@@ -107,7 +107,7 @@ bool acquireLocks_naive(transaction* pTransaction);
  * @param transactionId The id of the transaction that is releasing the locks.
  * @return void
  **/
-void releaseLocks(lock_t** locks, size_t size, size_t transactionId);
+void releaseLocks(lock_t** locks, unsigned long size, unsigned long transactionId);
 
 int compareLocks(const void *a, const void *b);
 
@@ -126,7 +126,7 @@ lock_t** getLocks(transaction *pTransaction);
  * @param transactionId id of the transaction
  * @return true if all locks are acquired, false otherwise
  **/
-bool acquireLocks(lock_t** locks, int size, size_t transactionId);
+bool acquireLocks(lock_t** locks, unsigned long size, unsigned long transactionId);
 
 
 /** This function clears the read and write sets of the given transaction.

@@ -26,6 +26,7 @@
 // External headers
 #include <cstdint>
 #include <random>
+#include <iostream>
 
 // Internal headers
 #include "common.hpp"
@@ -170,14 +171,20 @@ private:
                 sum += segment.parity; // We also sum the money that results from the destruction of accounts.
                 for (decltype(count) i = 0; i < segment_count; ++i) {
                     Balance local = segment.accounts[i];
-                    if (unlikely(local < 0)) // If one account has a negative balance, there's a consistency issue.
+                    if (unlikely(local < 0)){
+                        std::cout << "Negative balance: " << local << std::endl;
                         return false;
+                    } // If one account has a negative balance, there's a consistency issue.
                     sum += local;
                 }
                 start = segment.next; // Accounts are stored in linked segments, we move to the next one.
             }
             nbaccounts = count;
-            return sum == static_cast<Balance>(init_balance * count); // Consistency check: no money should ever be destroyed or created out of thin air.
+            bool temp = (sum == static_cast<Balance>(init_balance * count));
+            if(!temp){
+                std::cout << "sum: " << sum << " init_balance: " << init_balance << " count: " << count << " count*initbalance: " << init_balance * count << std::endl;
+            }
+            return temp; // Consistency check: no money should ever be destroyed or created out of thin air.
         });
     }
     /** Account (de)allocation transaction, adding accounts with initial balance or removing them.

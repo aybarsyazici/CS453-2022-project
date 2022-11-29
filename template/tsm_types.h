@@ -21,8 +21,8 @@ typedef struct segment_node {
     struct segment_node* prev; // Pointer to the previous segment
     struct segment_node* next; // Pointer to the next segment
     shared_t freeSpace; // Free space to be returned to the user where he can write or read concurrently
-    size_t size; // Size of the freeSpace in bytes
-    size_t align; // Alignment of the freeSpace in bytes
+    unsigned long size; // Size of the freeSpace in bytes
+    unsigned long align; // Alignment of the freeSpace in bytes
     uint64_t id; // Id of the current segment
     // Each segment needs to keep a version number for each word in the segment
     // The size of a word is decided by the user when he creates the shared memory region
@@ -31,7 +31,7 @@ typedef struct segment_node {
     // Each lock is used to protect TSM_WORDS_PER_LOCK words in the segment
     // The lock at index i protects the words at indices i * TSM_WORDS_PER_LOCK to (i + 1) * TSM_WORDS_PER_LOCK - 1 (inclusive.)
     // If the number of words in the segment is not a multiple of TSM_WORDS_PER_LOCK, the last lock protects the remaining words
-    size_t lock_size; // Size of the lock array
+    unsigned long lock_size; // Size of the lock array
     lock_node* locks; // Array of locks
 } segment_node;
 
@@ -42,7 +42,7 @@ typedef struct segment_node {
 typedef struct read_set_node {
     struct read_set_node* next; // Pointer to the next read set node
     segment_node* segment; // Pointer to the segment that the read set node is reading from
-    size_t offset; // Word that the read set node is reading from, this is the index of the word in the segment
+    unsigned long offset; // Word that the read set node is reading from, this is the index of the word in the segment
     // (i.e. how many alignments we read from the start of the segment)
 } read_set_node;
 
@@ -54,7 +54,7 @@ typedef struct read_set_node {
 typedef struct write_set_node {
     struct write_set_node* next; // Pointer to the next write set node
     segment_node* segment; // Pointer to the segment that the write set node is writing to
-    size_t offset; // Word that the write set node is writing to, this is the index of the word in the segment
+    unsigned long offset; // Word that the write set node is writing to, this is the index of the word in the segment
     // (i.e. how many alignments we wrote to the start of the segment)
     shared_t value; // new value of the word at the time of the writing operation
     uint64_t address;
@@ -69,7 +69,7 @@ typedef struct write_set_node {
 // A transaction can be aborted or committed.
 typedef struct transaction{
     unsigned long id; // Unique transaction id
-    unsigned long long version; // Global version at the time of the transaction start
+    unsigned long version; // Global version at the time of the transaction start
     read_set_node* readSetHead; // Pointer pointing to the first of the read set nodes
     read_set_node* readSetTail; // Pointer pointing to the last of the read set nodes
     write_set_node* writeSetHead; // Pointer pointing to the first of the write set nodes
@@ -84,7 +84,7 @@ typedef struct Region {
     void* start;         // Start of the shared memory region (i.e., of the non-deallocable memory segment)
     segment_node* allocHead; // Pointer pointing to the first of the shared memory segments dynamically allocated via tm_alloc within transactions
     segment_node* allocTail; // Pointer pointing to the last of the shared memory segments dynamically allocated via tm_alloc within transactions
-    size_t align;       // Size of a word in the shared memory region (in bytes)
+    unsigned long align;       // Size of a word in the shared memory region (in bytes)
     atomic_ulong globalVersion; // Global version of the shared memory region
     atomic_ulong latestTransactionId; // Latest transaction id
 } Region;

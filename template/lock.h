@@ -9,6 +9,7 @@
  * exclusive locks have wait/wake_up capabilities.
  */
 typedef struct lock_t {
+    atomic_ulong holder;
     atomic_bool mutex;
 }lock_t;
 
@@ -28,7 +29,7 @@ void lock_cleanup(struct lock_t* lock);
  * @param holder The thread that is acquiring the lock
  * @return Whether the operation is a success
 **/
-bool lock_acquire(struct lock_t* lock);
+bool lock_acquire(struct lock_t* lock, unsigned long holder);
 
 /**Wait and acquire the lock, blocking.
  * @param lock Lock to acquire
@@ -40,7 +41,7 @@ bool lock_acquire_blocking(struct lock_t* lock);
  * @param lock Lock to release
  * @param holder The thread that is releasing the lock
 **/
-void lock_release(struct lock_t* lock);
+void lock_release(struct lock_t* lock, unsigned long holder);
 
 /** Function to atomically check if the given lock is locked.
  * Unlocks the lock before returning.
@@ -57,3 +58,5 @@ bool lock_is_locked(struct lock_t* lock);
  * @return Whether the lock is inside the lockArray
 **/
 bool lock_is_locked_byAnotherThread(struct lock_t** lockArray, int size, struct lock_t* lock);
+
+bool lock_is_locked_byAnotherThread_holder(struct lock_t* lock, unsigned long potentialHolder);
