@@ -21,8 +21,6 @@ void addReadSet(transaction *pTransaction, segment_node *pSegment, size_t offset
         pTransaction->readSetTail = newReadSet;
         pTransaction->readSetSize++;
     }
-    uint64_t key = (uint64_t) pSegment->freeSpace + offset * pSegment->align; // Create the key for the bloom filter
-    //cfuhash_put_data(pTransaction->readSetMap, &key, sizeof(uint64_t),newReadSet, sizeof(read_set_node), NULL);
 }
 
 read_set_node *checkReadSet(Region *pRegion, transaction *pTransaction, void *address) {
@@ -59,7 +57,7 @@ void addWriteSet(transaction *pTransaction, segment_node *pSegment, size_t offse
     newWriteSet->address = (uint64_t) &(*(pSegment->freeSpace + offset * align));
     newWriteSet->next = NULL;
     // Add to bloom filter
-    bloom_add(pTransaction->writeSetBloom, &newWriteSet->address, sizeof(shared_t));
+    // bloom_add(pTransaction->writeSetBloom, &newWriteSet->address, sizeof(shared_t));
     if (pTransaction->writeSetHead == NULL) {
         pTransaction->writeSetHead = newWriteSet;
         pTransaction->writeSetTail = newWriteSet;
@@ -73,10 +71,10 @@ void addWriteSet(transaction *pTransaction, segment_node *pSegment, size_t offse
 
 write_set_node *checkWriteSet(Region *pRegion, transaction *pTransaction, void *address) {
     // Check if address is in bloom filter
-    uint64_t toCheck = ((uint64_t)&(*address));
-    if (!bloom_check(pTransaction->writeSetBloom, &toCheck, sizeof(uint64_t))) {
-        return NULL;
-    }
+    //uint64_t toCheck = ((uint64_t)&(*address));
+    //if (!bloom_check(pTransaction->writeSetBloom, &toCheck, sizeof(uint64_t))) {
+        //return NULL;
+    //}
     write_set_node *currentWriteSet = pTransaction->writeSetHead;
     while (currentWriteSet != NULL) {
         // Each write set node contains which segment it wrote to and the offset from the start of the segment
@@ -103,7 +101,7 @@ lock_t* getLock(segment_node *pSegment, size_t offset) {
     // For indexes 5 to 9, the result is 1, and for indexes 10 to 11, the result is 2, exactly as we want.
 }
 
-atomic_uint* getVersion(segment_node *pSegment, size_t offset) {
+atomic_ulong* getVersion(segment_node *pSegment, size_t offset) {
     // Please take a look at getLock() to understand why we are doing this division to get the correct index.
     return &((pSegment->locks + offset / TSM_WORDS_PER_LOCK)->version);
 }
@@ -126,7 +124,7 @@ bool clearSets(transaction *pTransaction) {
     pTransaction->writeSetHead = NULL;
     pTransaction->writeSetTail = NULL;
     pTransaction->writeSetSize = 0;
-    bloom_free(pTransaction->writeSetBloom);
+    // bloom_free(pTransaction->writeSetBloom);
     free(pTransaction->writeSetBloom);
     // Now clear the read set
     read_set_node *currentReadSet = pTransaction->readSetHead;
@@ -155,16 +153,16 @@ lock_t** getLocks(transaction *pTransaction) {
         current = current->next;
     }
     // sort locks by increasing order of the address
-    qsort(locks, pTransaction->writeSetSize, sizeof(lock_t*), compareLocks);
+    // qsort(locks, pTransaction->writeSetSize, sizeof(lock_t*), compareLocks);
     return locks;
 }
 
 bool acquireLocks(lock_t** locks, int size, size_t transactionId) {
     for (int i = 0; i < size; i++) {
-        if (!lock_acquire(locks[i], transactionId)) {
+        if (!lock_acquire(locks[i])) {
             // failed to acquire a lock, release all the locks it has acquired so far
             for (int j = 0; j < i; j++) {
-                lock_release(locks[j],transactionId);
+                lock_release(locks[j]);
             }
             return false;
         }
@@ -174,7 +172,7 @@ bool acquireLocks(lock_t** locks, int size, size_t transactionId) {
 
 void releaseLocks(lock_t** locks, size_t size, size_t transactionId) {
     for (int i = 0; i < size; i++) {
-        lock_release(locks[i], transactionId);
+        lock_release(locks[i]);
     }
 }
 
@@ -199,7 +197,7 @@ void releaseLocks_naive(transaction *pTransaction) {
         // Get the lock for the current write set node
         lock_node* lockNode = getLockNode(pWriteSetNode->segment, pWriteSetNode->offset);
         // Release the lock
-        lock_release(&lockNode->lock, pTransaction->id);
+        lock_release(&lockNode->lock);
         // Move to the next write set node
         pWriteSetNode = pWriteSetNode->next;
     }
@@ -212,7 +210,7 @@ bool acquireLocks_naive(transaction *pTransaction) {
         // Get the lock for the current write set node
         lock_node* lockNode = getLockNode(pWriteSetNode->segment, pWriteSetNode->offset);
         // Try to acquire the lock
-        if(!lock_acquire(&lockNode->lock, pTransaction->id)){
+        if(!lock_acquire(&lockNode->lock)){
             // If we failed to acquire the lock, release all the locks we acquired so far
             releaseLocks_naive(pTransaction);
             return false;

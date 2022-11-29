@@ -1,57 +1,45 @@
-#include <sys/errno.h>
-#include <printf.h>
+#include <unistd.h>
 #include "lock.h"
 
 bool lock_init(struct lock_t* lock) {
-    lock->holder = 0;
-    return pthread_mutex_init(&(lock->mutex), NULL) == 0
-        && pthread_cond_init(&(lock->cv), NULL) == 0;
+    lock->mutex = false;
+    return true;
 }
 
 void lock_cleanup(struct lock_t* lock) {
-    pthread_mutex_destroy(&(lock->mutex));
-    pthread_cond_destroy(&(lock->cv));
+    lock->mutex = false;
 }
 
-bool lock_acquire(struct lock_t* lock, size_t holder) {
-    if(pthread_mutex_trylock(&(lock->mutex)) == 0) {
-        lock->holder = holder;
-        return true;
-    }
-    return lock->holder == holder;
-}
-
-void lock_release(struct lock_t* lock, size_t holder) {
-    if(lock->holder == holder) {
-        lock->holder = 0;
-        pthread_mutex_unlock(&(lock->mutex));
-    }
-}
-
-void lock_wait(struct lock_t* lock) {
-    pthread_cond_wait(&(lock->cv), &(lock->mutex));
-}
-
-void lock_wake_up(struct lock_t* lock) {
-    pthread_cond_broadcast(&(lock->cv));
-}
-
-bool lock_is_locked(struct lock_t* lock) {
-    int locked = pthread_mutex_trylock(&(lock->mutex));
-    if (locked == 0) { // If try lock returns 0, the lock is not locked, and we have locked it
-        pthread_mutex_unlock(&(lock->mutex)); // Release the lock
-    }
-    return locked == EBUSY;
-}
-
-bool lock_acquire_blocking(struct lock_t* lock, size_t holder) {
-    if(pthread_mutex_lock(&(lock->mutex)) == 0) {
-        lock->holder = holder;
+bool lock_acquire(struct lock_t* lock) {
+    if(atomic_compare_exchange_strong(&lock->mutex, &(bool){false}, true)) {
         return true;
     }
     return false;
 }
 
-bool lock_is_locked_byAnotherThread(struct lock_t *lock, size_t holder) {
-    return lock->holder != holder && lock_is_locked(lock);
+void lock_release(struct lock_t* lock) {
+    lock->mutex = false;
+}
+
+bool lock_is_locked(struct lock_t* lock) {
+    return lock->mutex;
+}
+
+bool lock_acquire_blocking(struct lock_t* lock) {
+    int bound = 0;
+    while(atomic_compare_exchange_strong(&lock->mutex, &(bool){false}, true)){
+        if (bound > 100) return false;
+        usleep(10);
+        bound++;
+    }
+    return true;
+}
+
+bool lock_is_locked_byAnotherThread(struct lock_t** lockArray, int size, struct lock_t* lock){
+    for(int i = 0; i < size; i++){
+        if(lockArray[i] == lock){
+            return false;
+        }
+    }
+    return lock_is_locked(lock);
 }

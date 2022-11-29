@@ -80,7 +80,7 @@ lock_t* getLock(segment_node* pSegment, size_t offset);
  * @param offset The number of alignments from the start of the segment.
  * @return The version number of the word.
  **/
-atomic_uint* getVersion(segment_node* pSegment, size_t offset);
+atomic_ulong* getVersion(segment_node* pSegment, size_t offset);
 
 /** This function is used to get the lock node of a word in a given segment.
  * @param segment The segment to get the version number from.

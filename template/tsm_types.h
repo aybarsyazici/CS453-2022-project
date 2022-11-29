@@ -14,7 +14,7 @@
 
 typedef struct lock_node {
     lock_t lock;
-    atomic_uint version;
+    atomic_ulong version;
 } lock_node;
 
 typedef struct segment_node {
@@ -68,8 +68,8 @@ typedef struct write_set_node {
 // A transaction is identified by a unique transaction id.
 // A transaction can be aborted or committed.
 typedef struct transaction{
-    size_t id; // Unique transaction id
-    unsigned int version; // Global version at the time of the transaction start
+    unsigned long id; // Unique transaction id
+    unsigned long long version; // Global version at the time of the transaction start
     read_set_node* readSetHead; // Pointer pointing to the first of the read set nodes
     read_set_node* readSetTail; // Pointer pointing to the last of the read set nodes
     write_set_node* writeSetHead; // Pointer pointing to the first of the write set nodes
@@ -85,9 +85,8 @@ typedef struct Region {
     segment_node* allocHead; // Pointer pointing to the first of the shared memory segments dynamically allocated via tm_alloc within transactions
     segment_node* allocTail; // Pointer pointing to the last of the shared memory segments dynamically allocated via tm_alloc within transactions
     size_t align;       // Size of a word in the shared memory region (in bytes)
-    atomic_uint globalVersion; // Global version of the shared memory region
-    lock_t* globalLock; // Global lock to protect region
-    atomic_uint latestTransactionId; // Latest transaction id
+    atomic_ulong globalVersion; // Global version of the shared memory region
+    atomic_ulong latestTransactionId; // Latest transaction id
 } Region;
 
 #endif //CS453_2022_PROJECT_TSM_TYPES_H

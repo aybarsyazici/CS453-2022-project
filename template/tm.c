@@ -95,15 +95,6 @@ shared_t tm_create(size_t size, size_t align) {
     region->start       = firstSegment->freeSpace;
     region->globalVersion = 0;
     region->latestTransactionId = 1;
-    region->globalLock = ((lock_t*) malloc(sizeof(lock_t)));
-    if(unlikely(!region->globalLock)) {
-        free(firstSegment->locks);
-        free(firstSegment->freeSpace);
-        free(firstSegment);
-        free(region);
-        return invalid_shared;
-    }
-    lock_init(region->globalLock);
     return region;
 }
 
@@ -125,8 +116,6 @@ void tm_destroy(shared_t shared) {
         free(currentSegment);
         currentSegment = nextSegment;
     }
-    lock_cleanup(region->globalLock);
-    free(region->globalLock);
     free(region);
 }
 
@@ -176,8 +165,7 @@ tx_t tm_begin(shared_t shared, bool is_ro) {
     // Fetch and increment the latest transaction id
     newTransaction->id = ++region->latestTransactionId;
     newTransaction->writeSetBloom = (bloom*)malloc(sizeof(bloom));
-    bloom_init2(newTransaction->writeSetBloom, 100000, 0.01);
-    //newTransaction->readSetMap = cfuhash_new();
+    // bloom_init2(newTransaction->writeSetBloom, 100000, 0.01);
     return (tx_t)newTransaction;
 }
 
@@ -196,7 +184,7 @@ bool tm_end(shared_t shared, tx_t tx) {
         // Sample the global version
         if(acquireLocks(locksToAcquire, transaction->writeSetSize, transaction->id)) {
             // increment and fetch the global version.
-            atomic_uint newVersion = ++region->globalVersion;
+            atomic_ulong newVersion = ++region->globalVersion;
             if(transaction->version + 1 != newVersion) {
                 read_set_node * currentReadSetNode = transaction->readSetHead;
                 while (currentReadSetNode != NULL) {
@@ -209,7 +197,7 @@ bool tm_end(shared_t shared, tx_t tx) {
                         return false;
                     }
                     // Check if current read set node is locked
-                    if(lock_is_locked_byAnotherThread(&lockNode->lock, transaction->id)) {
+                    if(lock_is_locked_byAnotherThread(locksToAcquire, transaction->writeSetSize, &lockNode->lock)) {
                         // Abort the transaction.
                         releaseLocks(locksToAcquire, transaction->writeSetSize, transaction->id);
                         clearSets(transaction);
@@ -279,7 +267,7 @@ bool tm_read(shared_t shared, tx_t tx, void const* source, size_t size, void* ta
         size_t offset = (size_t) ((void*) currentSource - segment->freeSpace) / region->align;
         lock_node* lockNode = getLockNode(segment, offset);
         // Sample the version of the lock node.
-        unsigned int version = lockNode->version;
+        unsigned long version = lockNode->version;
 
 
         // Check if the transaction is read-only.
@@ -410,13 +398,12 @@ alloc_t tm_alloc(shared_t shared, tx_t unused(tx), size_t size, void** target) {
         free(newSegment);
         return nomem_alloc;
     }
-    atomic_uint globalVersion = region->globalVersion;
+    atomic_ulong globalVersion = region->globalVersion;
     for (int i = 0; i < newSegment->lock_size; i++) {
         lock_init(&((newSegment->locks + i)->lock));
         newSegment->locks[i].version = globalVersion;
     }
     // Lock the region, so no other transaction can allocate memory at the same time.
-    lock_acquire_blocking(region->globalLock,0);
     // Add this segment to the list of segments of the region.
     newSegment->prev = region->allocTail; // The prev pointer of this segment points to the last segment of the region.
     newSegment->next = NULL; // The next pointer of this segment is NULL. As it is currently the latest segment of the region.
@@ -425,7 +412,6 @@ alloc_t tm_alloc(shared_t shared, tx_t unused(tx), size_t size, void** target) {
     region->allocTail->next = newSegment; // The next pointer of the last segment of the region points to this segment.
     region->allocTail = newSegment; // Latest segment of the region is updated to be this segment.
     // Unlock the region.
-    lock_release(region->globalLock,0);
     *target = newSegment->freeSpace;
     return success_alloc;
 }
@@ -451,7 +437,6 @@ bool tm_free(shared_t shared, tx_t tx, void* target) {
         return false;
     }
     // Lock the region, so no other transaction can allocate memory at the same time.
-    lock_acquire_blocking(region->globalLock,0);
     // Remove the segment node from the list of segments of the region.
     if (currentSegment->prev != NULL) {
         currentSegment->prev->next = currentSegment->next;
@@ -459,7 +444,6 @@ bool tm_free(shared_t shared, tx_t tx, void* target) {
     if (currentSegment->next != NULL) {
         currentSegment->next->prev = currentSegment->prev;
     }
-    lock_release(region->globalLock,0);
     // Free the memory buffer.
     free(currentSegment->freeSpace);
     // Cleanup all locks
