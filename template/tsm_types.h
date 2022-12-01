@@ -11,6 +11,7 @@
 #include "bloom.h"
 
 #define TSM_WORDS_PER_LOCK 1
+#define TSM_ARRAY_SIZE 65536
 
 typedef struct lock_node {
     lock_t lock;
@@ -18,12 +19,14 @@ typedef struct lock_node {
 } lock_node;
 
 typedef struct segment_node {
-    struct segment_node* prev; // Pointer to the previous segment
-    struct segment_node* next; // Pointer to the next segment
-    shared_t freeSpace; // Free space to be returned to the user where he can write or read concurrently
+    atomic_ulong allocator;
+    atomic_bool accessible;
+    atomic_ullong numberofTransactions;
+    shared_t freeSpace; // Actual free space in the segment
+    shared_t fakeSpace; // Fake space to be returned to the user where he can write or read concurrently
     unsigned long size; // Size of the freeSpace in bytes
     unsigned long align; // Alignment of the freeSpace in bytes
-    uint64_t id; // Id of the current segment
+    unsigned int id; // Id of the current segment
     // Each segment needs to keep a version number for each word in the segment
     // The size of a word is decided by the user when he creates the shared memory region
     // word size will be equal to the alignment size of the shared memory region
@@ -60,6 +63,15 @@ typedef struct write_set_node {
     uint64_t address;
 } write_set_node;
 
+typedef struct segment_array {
+    segment_node** elements; // Array of pointers to segments
+    atomic_bool* locks; // Array of locks for each segment
+} segment_array;
+
+typedef struct segment_ll{
+    segment_node* segmentNode;
+    struct segment_ll* next;
+}segment_ll;
 
 // Transaction declaration to implement Transactional Locking II.
 // A transaction can be a read only transaction or a read write transaction.
@@ -74,7 +86,11 @@ typedef struct transaction{
     read_set_node* readSetTail; // Pointer pointing to the last of the read set nodes
     write_set_node* writeSetHead; // Pointer pointing to the first of the write set nodes
     write_set_node* writeSetTail; // Pointer pointing to the last of the write set nodes
-    bloom* writeSetBloom;
+    segment_ll* allocListHead; // Pointer pointing to the first of the allocated segments
+    segment_ll* allocListTail; // Pointer pointing to the last of the allocated segments
+    segment_ll* freeListHead; // Pointer pointing to the first of the free segments
+    segment_ll* freeListTail; // Pointer pointing to the last of the free segments
+    segment_node* workingSet[TSM_ARRAY_SIZE]; // Array of pointers to segments that the transaction is working on
     int readSetSize; // Size of the read set
     int writeSetSize; // Size of the write set
     bool isReadOnly; // Boolean to check if the transaction is read only or not
@@ -82,8 +98,7 @@ typedef struct transaction{
 
 typedef struct Region {
     void* start;         // Start of the shared memory region (i.e., of the non-deallocable memory segment)
-    segment_node* allocHead; // Pointer pointing to the first of the shared memory segments dynamically allocated via tm_alloc within transactions
-    segment_node* allocTail; // Pointer pointing to the last of the shared memory segments dynamically allocated via tm_alloc within transactions
+    segment_array segments; // Array of pointers to segments
     unsigned long align;       // Size of a word in the shared memory region (in bytes)
     atomic_ulong globalVersion; // Global version of the shared memory region
     atomic_ulong latestTransactionId; // Latest transaction id

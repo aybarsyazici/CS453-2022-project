@@ -44,7 +44,7 @@ read_set_node* checkReadSet(Region* pRegion, transaction* pTransaction, void* ad
  * @param address The address to find the segment of.
  * @return The segment that contains the address, or NULL if the address is not in any segment.
  **/
-segment_node* findSegment(Region* pRegion, void* address);
+segment_node* findSegment(Region* pRegion, void* address, transaction* pTransaction);
 
 /** This function is used to add a new writeSet node to the given transaction.
  * @param transaction The transaction to add the writeSet node to.
@@ -131,9 +131,22 @@ bool acquireLocks(lock_t** locks, unsigned long size, unsigned long transactionI
 
 /** This function clears the read and write sets of the given transaction.
  * @param transaction The transaction to clear the read and write sets of.
+ * @param success Whether the transaction was successful or not.
  * @return true if the read and write sets were cleared successfully, or false if they couldn't be cleared.
  **/
-bool clearSets(transaction* pTransaction);
+bool clearSets(transaction* pTransaction, bool success);
+
+/** This function given a segment array inserts the segment
+ * @param segments array of segments
+ * @param segment segment to insert
+ * **/
+void insertSegment(segment_array* array, segment_node* segment);
+
+/** This function given a segment array finds the first empty spot available
+ * @param segments array of segments
+ * @return index of the first empty spot
+**/
+int findEmptySegment(segment_array* array);
 
 /**
  ***************************************************************************************

@@ -38,15 +38,14 @@ read_set_node *checkReadSet(Region *pRegion, transaction *pTransaction, void *ad
     return NULL;
 }
 
-segment_node *findSegment(Region *pRegion, void *address) {
-    segment_node *currentSegment = pRegion->allocHead;
-    while (currentSegment != NULL) {
-        if (currentSegment->freeSpace <= address && address < currentSegment->freeSpace + currentSegment->size) {
-            return currentSegment;
-        }
-        currentSegment = currentSegment->next;
+segment_node *findSegment(Region *pRegion, void *address, transaction *pTransaction) {
+    int index = (int) ((unsigned long) address >> 48);
+    segment_node* toReturn = pRegion->segments.elements[index];
+    if(toReturn->id != 1){
+        printf("Segment %d, segmentFakeSpace %p\n",toReturn->id, toReturn->fakeSpace);
+        printf("PROBLEM!\n");
     }
-    return NULL;
+    return toReturn;
 }
 
 void addWriteSet(transaction *pTransaction, segment_node *pSegment, unsigned long offset, void *value, unsigned long align) {
@@ -111,7 +110,7 @@ lock_node* getLockNode(segment_node *pSegment, unsigned long offset) {
     return (pSegment->locks + offset / TSM_WORDS_PER_LOCK);
 }
 
-bool clearSets(transaction *pTransaction) {
+bool clearSets(transaction *pTransaction, bool success) {
     // First clear the write set
     write_set_node *currentWriteSet = pTransaction->writeSetHead;
     write_set_node *nextWriteSet;
@@ -124,8 +123,6 @@ bool clearSets(transaction *pTransaction) {
     pTransaction->writeSetHead = NULL;
     pTransaction->writeSetTail = NULL;
     pTransaction->writeSetSize = 0;
-    // bloom_free(pTransaction->writeSetBloom);
-    free(pTransaction->writeSetBloom);
     // Now clear the read set
     read_set_node *currentReadSet = pTransaction->readSetHead;
     read_set_node *nextReadSet;
@@ -219,4 +216,27 @@ bool acquireLocks_naive(transaction *pTransaction) {
         pWriteSetNode = pWriteSetNode->next;
     }
     return true;
+}
+
+void insertSegment(segment_array *array, segment_node *segment) {
+
+    segment_node ** segments = array->elements;
+    while(atomic_compare_exchange_strong((array->locks+segment->id), &(bool){false}, true) == false);
+    if (segments[segment->id] == NULL) {
+        segments[segment->id] = segment;
+    } else {
+        printf("Segment %d already exists, should NOT HAPPEN\n", segment->id);
+    }
+    atomic_store((array->locks+segment->id), false);
+}
+
+int findEmptySegment(segment_array *array) {
+    for(int i = 1; i < TSM_ARRAY_SIZE; i++){
+        if(array->elements[i] == NULL){
+            if(atomic_compare_exchange_strong((array->locks+i), &(bool){false}, true)){
+                return i;
+            }
+        }
+    }
+    return -1;
 }

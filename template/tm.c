@@ -27,6 +27,7 @@
 #include <tm.h>
 #include <stdlib.h>
 #include <string.h>
+#include <printf.h>
 
 #include "macros.h"
 #include "tsm_types.h"
@@ -38,26 +39,27 @@
  * @return Opaque shared memory region handle, 'invalid_shared' on failure
 **/
 shared_t tm_create(size_t size, size_t align) {
-    // First check if the size is a positive multiple of the alignment
-    if (size % align != 0 || size <= 0) {
-        return invalid_shared;
-    }
-    // Now check if the alignment is a power of 2 and if it's larger than sizeof(void *)
-    if ((align & (align - 1)) != 0 || align < sizeof(void *)) {
-        return invalid_shared;
-    }
     Region* region = (Region *) malloc(sizeof(Region));
     if (unlikely(!region)) {
         return invalid_shared;
     }
+
+    region->segments.elements = (segment_node **) malloc(sizeof(segment_node *) * 65536);
+    region->segments.locks = (atomic_bool *) malloc(sizeof(atomic_bool) * 65536);
+    if(unlikely(!region->segments.elements || !region->segments.locks)) {
+        return invalid_shared;
+    }
+    for(int i = 0; i < 65536; i++) {
+        region->segments.elements[i] = NULL;
+        atomic_init(&region->segments.locks[i], false);
+    }
+
     // Create a segment node for the first segment of memory of given size.
     segment_node* firstSegment = (segment_node *) malloc(sizeof(segment_node));
     if (unlikely(!firstSegment)) {
         free(region);
         return invalid_shared;
     }
-    firstSegment->prev = NULL;
-    firstSegment->next = NULL;
     // We allocate the shared memory buffer such that its words are correctly aligned.
     if (posix_memalign(&(firstSegment->freeSpace), align, size) != 0) {
         free(firstSegment);
@@ -66,12 +68,6 @@ shared_t tm_create(size_t size, size_t align) {
     }
     // Initialize the region with 0s
     memset(firstSegment->freeSpace, 0, size);
-    // Initialize locks in the segment, as each lock is associated with TSM_WORDS_PER_LOCK words, we need to initialize
-    // size / align / TSM_WORDS_PER_LOCK locks.
-    // But as this can give us a decimal number, we need to round it up to the next integer.
-    // Imagine we have 12 words in the segment(so size/alignment gives 12)
-    // And TSM_WORDS_PER_LOCK is 5, then we need to initialize 12/5 = 2.4 locks, but we need to round it up to 3.
-    // That why we have +1 in the formula.
     size_t wordCount = size / align;
     firstSegment->lock_size = (wordCount / TSM_WORDS_PER_LOCK) + (wordCount % TSM_WORDS_PER_LOCK == 0 ? 0 : 1);
     firstSegment->locks = (lock_node *) malloc(sizeof(lock_node) * firstSegment->lock_size);
@@ -85,13 +81,18 @@ shared_t tm_create(size_t size, size_t align) {
         lock_init(&((firstSegment->locks + i)->lock));
         (firstSegment->locks + i)->version = 0;
     }
+    firstSegment->id    = 1;
+    void* address = (void*)((unsigned long)firstSegment->id << 48);
+    printf("Created region with start address %p\n",address);
     firstSegment->size  = size;
-    firstSegment->id    = 0;
     firstSegment->align = align;
-    region->allocHead      = firstSegment; // The region starts with one non-deletable segment.
-    region->allocTail      = firstSegment; // The region starts with one non-deletable segment.
+    firstSegment->allocator = 0;
+    firstSegment->accessible = true;
+    firstSegment->numberofTransactions = 0;
+    firstSegment->fakeSpace = address;
     region->align       = align;
-    region->start       = firstSegment->freeSpace;
+    region->segments.elements[firstSegment->id] = firstSegment;
+    region->start = address;
     region->globalVersion = 0;
     region->latestTransactionId = 1;
     return region;
@@ -103,18 +104,16 @@ shared_t tm_create(size_t size, size_t align) {
 void tm_destroy(shared_t shared) {
     Region* region = (Region *) shared;
     // Free all the segments of the region.
-    segment_node* currentSegment = region->allocHead;
-    while (currentSegment != NULL) {
-        segment_node* nextSegment = currentSegment->next;
-        free(currentSegment->freeSpace);
-        // Destroy all locks of this segment.
-        for (int i = 0; i < currentSegment->lock_size; i++) {
-            lock_cleanup(&((currentSegment->locks + i)->lock));
+    for(int i = 0; i < 65536; i++) {
+        segment_node* currentSegment = region->segments.elements[i];
+        if(currentSegment != NULL) {
+            free(currentSegment->freeSpace);
+            free(currentSegment->locks);
+            free(currentSegment);
         }
-        free(currentSegment->locks);
-        free(currentSegment);
-        currentSegment = nextSegment;
     }
+    free(region->segments.elements);
+    free(region->segments.locks);
     free(region);
 }
 
@@ -131,7 +130,7 @@ void* tm_start(shared_t shared) {
  * @return First allocated segment size
 **/
 size_t tm_size(shared_t shared) {
-    return ((Region*)shared)->allocHead->size;
+    return ((Region*)shared)->segments.elements[1]->size;
 }
 
 /** [thread-safe] Return the alignment (in bytes) of the memory accesses on the given shared memory region.
@@ -159,12 +158,14 @@ tx_t tm_begin(shared_t shared, bool is_ro) {
     newTransaction->readSetTail = NULL;
     newTransaction->writeSetHead = NULL;
     newTransaction->writeSetTail = NULL;
+    newTransaction->allocListHead = NULL;
+    newTransaction->allocListTail = NULL;
+    newTransaction->freeListHead = NULL;
+    newTransaction->freeListTail = NULL;
     newTransaction->version = region->globalVersion; // The transaction starts with the current global version.
     newTransaction->isReadOnly = is_ro;
     // Fetch and increment the latest transaction id
-    unsigned long oldId = region->latestTransactionId;
     newTransaction->id = ++region->latestTransactionId;
-    newTransaction->writeSetBloom = (bloom*)malloc(sizeof(bloom));
     // bloom_init2(newTransaction->writeSetBloom, 100000, 0.01);
     return (tx_t)newTransaction;
 }
@@ -188,14 +189,14 @@ bool tm_end(shared_t shared, tx_t tx) {
                     lock_node * lockNode = getLockNode(currentReadSetNode->segment, currentReadSetNode->offset);
                     if ( lockNode->version > transaction->version) {
                         releaseLocks(locksToAcquire, transaction->writeSetSize, transaction->id);
-                        clearSets(transaction);
+                        clearSets(transaction,false);
                         free(locksToAcquire);
                         return false;
                     }
                     // Check if current read set node is locked
                     if(lock_is_locked_byAnotherThread(locksToAcquire, transaction->writeSetSize, &lockNode->lock)) {
                         releaseLocks(locksToAcquire, transaction->writeSetSize, transaction->id);
-                        clearSets(transaction);
+                        clearSets(transaction,false);
                         free(locksToAcquire);
                         return false;
                     }
@@ -220,11 +221,11 @@ bool tm_end(shared_t shared, tx_t tx) {
         else{
             // Abort the transaction.
             free(locksToAcquire);
-            clearSets(transaction);
+            clearSets(transaction,false);
             return false;
         }
     }
-    clearSets(transaction);
+    clearSets(transaction,true);
     return true;
 }
 
@@ -239,15 +240,16 @@ bool tm_end(shared_t shared, tx_t tx) {
 bool tm_read(shared_t shared, tx_t tx, void const* source, size_t size, void* target) {
     Region* region = (Region *) shared;
     transaction* transaction = getTransaction(region, tx);
-    segment_node* segment = findSegment(region, (void*)source);
+    segment_node* segment = findSegment(region, (void*)source,transaction);
     if(segment == NULL){
-        clearSets(transaction);
+        clearSets(transaction,false);
         return false;
     }
     size_t currentWord = 0;
+    void* actualSource = segment->freeSpace + (source - segment->fakeSpace);
     for(;currentWord < size / region->align;currentWord++){
         void* currentTarget = (void*) target + currentWord * region->align;
-        void* currentSource = (void*) source + currentWord * region->align;
+        void* currentSource = (void*) actualSource + currentWord * region->align;
 
         write_set_node* writeSetNode = NULL;
 
@@ -256,15 +258,15 @@ bool tm_read(shared_t shared, tx_t tx, void const* source, size_t size, void* ta
         unsigned long version = lockNode->version;
 
         if(version != lockNode->version){
-            clearSets(transaction);
+            clearSets(transaction,false);
             return false;
         }
         if (lock_is_locked(&lockNode->lock)) {
-            clearSets(transaction);
+            clearSets(transaction,false);
             return false;
         }
         if (lockNode->version > transaction->version) {
-            clearSets(transaction);
+            clearSets(transaction,false);
             return false;
         }
 
@@ -278,15 +280,15 @@ bool tm_read(shared_t shared, tx_t tx, void const* source, size_t size, void* ta
             memcpy(currentTarget, writeSetNode->value, region->align);
         }
         if(version != lockNode->version){
-            clearSets(transaction);
+            clearSets(transaction,false);
             return false;
         }
         if (lock_is_locked(&lockNode->lock)) {
-            clearSets(transaction);
+            clearSets(transaction,false);
             return false;
         }
         if (lockNode->version > transaction->version) {
-            clearSets(transaction);
+            clearSets(transaction,false);
             return false;
         }
         // Then we need to add the read set node to the read set.
@@ -308,14 +310,15 @@ bool tm_read(shared_t shared, tx_t tx, void const* source, size_t size, void* ta
 bool tm_write(shared_t shared, tx_t tx, void const* source, size_t size, void* target) {
     Region* region = (Region *) shared;
     transaction* transaction = getTransaction(region, tx);
-    segment_node* segment = findSegment(region, target);
+    segment_node* segment = findSegment(region, target,transaction);
     if(segment == NULL){
-        clearSets(transaction);
+        clearSets(transaction,false);
         return false;
     }
     size_t currentWord = 0;
+    void* actualTarget = segment->freeSpace + (target - segment->fakeSpace);
     for(;currentWord < size / region->align; currentWord++){
-        void* currentTarget = (void*) target + currentWord * region->align;
+        void* currentTarget = (void*) actualTarget + currentWord * region->align;
         void* currentSource = (void*) source + currentWord * region->align;
         write_set_node* writeSetNode = checkWriteSet(region, transaction, currentTarget);
         if(writeSetNode != NULL){
@@ -325,7 +328,7 @@ bool tm_write(shared_t shared, tx_t tx, void const* source, size_t size, void* t
         unsigned long offset = (size_t) ((void*) currentTarget - segment->freeSpace) / region->align;
         void* value = aligned_alloc(region->align, region->align);
         if(value == NULL){
-            clearSets(transaction);
+            clearSets(transaction,false);
             return false;
         }
         memcpy(value, currentSource, region->align);
@@ -341,35 +344,37 @@ bool tm_write(shared_t shared, tx_t tx, void const* source, size_t size, void* t
  * @param target Pointer in private memory receiving the address of the first byte of the newly allocated, aligned segment
  * @return Whether the whole transaction can continue (success/nomem), or not (abort_alloc)
 **/
-alloc_t tm_alloc(shared_t shared, tx_t unused(tx), size_t size, void** target) {
+alloc_t tm_alloc(shared_t shared, tx_t tx, size_t size, void** target) {
     Region* region = (Region *) shared;
-    // Check if size is a positive multiple of the alignment.
-    if (size <= 0 || size % region->align != 0) {
+    transaction* transaction = getTransaction(region, tx);
+    // First try to find an empty space in the segment array
+    int id = findEmptySegment(&region->segments);
+    if(id == -1) {
         return nomem_alloc;
     }
-    // First create a new segment node
+    void* address = (void*)(id << 48);
+    printf("Fake Address: %p\n", address);
     segment_node* newSegment = (segment_node *) malloc(sizeof(segment_node));
     if (unlikely(!newSegment)) {
+        atomic_store((region->segments.locks+id), false);
         return nomem_alloc;
     }
-    // Allocate memory for the segment with given alignment and size
     if (posix_memalign(newSegment->freeSpace, region->align, size) != 0) {
         free(newSegment);
+        atomic_store((region->segments.locks+id), false);
         return nomem_alloc;
     }
     memset(newSegment->freeSpace, 0, size); // Set all bytes to 0
-    // Initialize locks in the segment, as each lock is associated with TSM_WORDS_PER_LOCK words, we need to initialize
-    // size / align / TSM_WORDS_PER_LOCK locks.
-    // But as this can give us a decimal number, we need to round it up to the next integer.
-    // Imagine we have 12 words in the segment(so size/alignment gives 12)
-    // And TSM_WORDS_PER_LOCK is 5, then we need to initialize 12/5 = 2.4 locks, but we need to round it up to 3.
-    // That why we have +1 in the formula.
+    newSegment->fakeSpace = address;
     size_t wordCount = size / region->align;
     newSegment->lock_size = (wordCount / TSM_WORDS_PER_LOCK) + (wordCount % TSM_WORDS_PER_LOCK == 0 ? 0 : 1);
     newSegment->locks = (lock_node *) malloc(sizeof(lock_node) * newSegment->lock_size);
+    newSegment->accessible = false;
+    newSegment->allocator = transaction->id;
     if(unlikely(!newSegment->locks)) {
         free(newSegment->freeSpace);
         free(newSegment);
+        atomic_store((region->segments.locks+id), false);
         return nomem_alloc;
     }
     atomic_ulong globalVersion = region->globalVersion;
@@ -377,16 +382,37 @@ alloc_t tm_alloc(shared_t shared, tx_t unused(tx), size_t size, void** target) {
         lock_init(&((newSegment->locks + i)->lock));
         newSegment->locks[i].version = globalVersion;
     }
-    // Lock the region, so no other transaction can allocate memory at the same time.
-    // Add this segment to the list of segments of the region.
-    newSegment->prev = region->allocTail; // The prev pointer of this segment points to the last segment of the region.
-    newSegment->next = NULL; // The next pointer of this segment is NULL. As it is currently the latest segment of the region.
-    newSegment->size  = size;
-    newSegment->id    = region->allocTail->id + 1;
-    region->allocTail->next = newSegment; // The next pointer of the last segment of the region points to this segment.
-    region->allocTail = newSegment; // Latest segment of the region is updated to be this segment.
-    // Unlock the region.
-    *target = newSegment->freeSpace;
+    if(transaction->allocListHead == NULL){
+        transaction->allocListHead = (segment_ll*) malloc(sizeof(segment_ll));
+        if(unlikely(!transaction->allocListHead)){
+            free(newSegment->locks);
+            free(newSegment->freeSpace);
+            free(newSegment);
+            atomic_store((region->segments.locks+id), false);
+            return nomem_alloc;
+        }
+        transaction->allocListHead->segmentNode = newSegment;
+        transaction->allocListHead->next = NULL;
+        transaction->allocListTail = transaction->allocListHead;
+
+    }
+    else {
+        segment_ll *tail = transaction->allocListTail;
+        tail->next = (segment_ll *) malloc(sizeof(segment_ll));
+        if(unlikely(!tail->next)){
+            free(newSegment->locks);
+            free(newSegment->freeSpace);
+            free(newSegment);
+            atomic_store((region->segments.locks+id), false);
+            return nomem_alloc;
+        }
+        tail->next->segmentNode = newSegment;
+        tail->next->next = NULL;
+        transaction->allocListTail = tail->next;
+    }
+    region->segments.elements[id] = newSegment;
+    atomic_store((region->segments.locks+id), false);
+
     return success_alloc;
 }
 
@@ -397,34 +423,31 @@ alloc_t tm_alloc(shared_t shared, tx_t unused(tx), size_t size, void** target) {
  * @return Whether the whole transaction can continue
 **/
 bool tm_free(shared_t shared, tx_t tx, void* target) {
-    // First find the segment node corresponding to the given address.
     Region* region = (Region *) shared;
-    segment_node* currentSegment = findSegment(region, target);
     transaction* transaction = getTransaction(region, tx);
-    if (currentSegment == NULL) {
-        clearSets(transaction);
+    segment_node* segment = findSegment(region, target,transaction);
+    if(segment == NULL){
+        clearSets(transaction,false);
         return false;
     }
-    // If the segment's id is 0 then it is the first segment allocated thus we cannot free it.
-    if (currentSegment->id == 0) {
-        clearSets(transaction);
-        return false;
+    if(transaction->freeListHead == NULL){
+        transaction->freeListHead = (segment_ll*) malloc(sizeof(segment_ll));
+        if(unlikely(!transaction->freeListHead)){
+            return false;
+        }
+        transaction->freeListHead->segmentNode = segment;
+        transaction->freeListHead->next = NULL;
+        transaction->freeListTail = transaction->freeListHead;
     }
-    // Lock the region, so no other transaction can allocate memory at the same time.
-    // Remove the segment node from the list of segments of the region.
-    if (currentSegment->prev != NULL) {
-        currentSegment->prev->next = currentSegment->next;
+    else {
+        segment_ll *tail = transaction->freeListTail;
+        tail->next = (segment_ll *) malloc(sizeof(segment_ll));
+        if(unlikely(!tail->next)){
+            return false;
+        }
+        tail->next->segmentNode = segment;
+        tail->next->next = NULL;
+        transaction->freeListTail = tail->next;
     }
-    if (currentSegment->next != NULL) {
-        currentSegment->next->prev = currentSegment->prev;
-    }
-    // Free the memory buffer.
-    free(currentSegment->freeSpace);
-    // Cleanup all locks
-    for (int i = 0; i < currentSegment->size / region->align / TSM_WORDS_PER_LOCK; i++) {
-        lock_cleanup(&((currentSegment->locks + i)->lock));
-    }
-    free(currentSegment->locks);
-    free(currentSegment);
     return true;
 }
