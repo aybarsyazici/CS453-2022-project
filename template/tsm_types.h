@@ -21,7 +21,7 @@ typedef struct lock_node {
 typedef struct segment_node {
     atomic_ulong allocator;
     atomic_bool accessible;
-    atomic_ullong numberofTransactions;
+    atomic_bool deleted;
     shared_t freeSpace; // Actual free space in the segment
     shared_t fakeSpace; // Fake space to be returned to the user where he can write or read concurrently
     unsigned long size; // Size of the freeSpace in bytes
@@ -73,6 +73,14 @@ typedef struct segment_ll{
     struct segment_ll* next;
 }segment_ll;
 
+typedef struct Region {
+    void* start;         // Start of the shared memory region (i.e., of the non-deallocable memory segment)
+    segment_array segments; // Array of pointers to segments
+    unsigned long align;       // Size of a word in the shared memory region (in bytes)
+    atomic_ulong globalVersion; // Global version of the shared memory region
+    atomic_ulong latestTransactionId; // Latest transaction id
+} Region;
+
 // Transaction declaration to implement Transactional Locking II.
 // A transaction can be a read only transaction or a read write transaction.
 // Read only transactions only keep a read set and read write transactions keep a read and write set.
@@ -81,6 +89,7 @@ typedef struct segment_ll{
 // A transaction can be aborted or committed.
 typedef struct transaction{
     unsigned long id; // Unique transaction id
+    Region* region;
     unsigned long version; // Global version at the time of the transaction start
     read_set_node* readSetHead; // Pointer pointing to the first of the read set nodes
     read_set_node* readSetTail; // Pointer pointing to the last of the read set nodes
@@ -90,18 +99,10 @@ typedef struct transaction{
     segment_ll* allocListTail; // Pointer pointing to the last of the allocated segments
     segment_ll* freeListHead; // Pointer pointing to the first of the free segments
     segment_ll* freeListTail; // Pointer pointing to the last of the free segments
-    segment_node* workingSet[TSM_ARRAY_SIZE]; // Array of pointers to segments that the transaction is working on
     int readSetSize; // Size of the read set
     int writeSetSize; // Size of the write set
     bool isReadOnly; // Boolean to check if the transaction is read only or not
 } transaction;
 
-typedef struct Region {
-    void* start;         // Start of the shared memory region (i.e., of the non-deallocable memory segment)
-    segment_array segments; // Array of pointers to segments
-    unsigned long align;       // Size of a word in the shared memory region (in bytes)
-    atomic_ulong globalVersion; // Global version of the shared memory region
-    atomic_ulong latestTransactionId; // Latest transaction id
-} Region;
 
 #endif //CS453_2022_PROJECT_TSM_TYPES_H

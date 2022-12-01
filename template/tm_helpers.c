@@ -41,9 +41,18 @@ read_set_node *checkReadSet(Region *pRegion, transaction *pTransaction, void *ad
 segment_node *findSegment(Region *pRegion, void *address, transaction *pTransaction) {
     int index = (int) ((unsigned long) address >> 48);
     segment_node* toReturn = pRegion->segments.elements[index];
-    if(toReturn->id != 1){
-        printf("Segment %d, segmentFakeSpace %p\n",toReturn->id, toReturn->fakeSpace);
-        printf("PROBLEM!\n");
+    if(toReturn == NULL) {
+        // printf("Segment not found, address: %p",address);
+        return NULL;
+    };
+    if(toReturn->accessible == 0 && pTransaction->id != toReturn->allocator){
+        // printf("Segment %d, segmentFakeSpace %p\n",toReturn->id, toReturn->fakeSpace);
+        // printf("PROBLEM!\n");
+        return NULL;
+    }
+    if(toReturn->deleted) {
+        // printf("Segment %d is deleted\n",toReturn->id);
+        return NULL;
     }
     return toReturn;
 }
@@ -116,6 +125,9 @@ bool clearSets(transaction *pTransaction, bool success) {
     write_set_node *nextWriteSet;
     while (currentWriteSet != NULL) {
         nextWriteSet = currentWriteSet->next;
+        if(currentWriteSet->segment == NULL){
+            // printf("WRITE SET SEGMENT NULL, SHOULD NOT HAPPEN\n");
+        }
         free(currentWriteSet->value);
         free(currentWriteSet);
         currentWriteSet = nextWriteSet;
@@ -128,12 +140,29 @@ bool clearSets(transaction *pTransaction, bool success) {
     read_set_node *nextReadSet;
     while (currentReadSet != NULL) {
         nextReadSet = currentReadSet->next;
+        if(currentReadSet->segment == NULL) {
+            // printf("READ SET SEGMENT NULL, SHOULD NOT HAPPEN\n");
+        }
         free(currentReadSet);
         currentReadSet = nextReadSet;
     }
     pTransaction->readSetHead = NULL;
     pTransaction->readSetTail = NULL;
     pTransaction->readSetSize = 0;
+    if(!success){
+        // Free the alloc set
+        segment_ll* allocSet = pTransaction->allocListHead;
+        segment_ll* nextAllocSet;
+        while (allocSet != NULL) {
+            nextAllocSet = allocSet->next;
+            pTransaction->region->segments.elements[allocSet->segmentNode->id] = NULL;
+            free(allocSet->segmentNode->locks);
+            free(allocSet->segmentNode->freeSpace);
+            free(allocSet->segmentNode);
+            free(allocSet);
+            allocSet = nextAllocSet;
+        }
+    }
     free(pTransaction);
     return true;
 }
@@ -225,7 +254,7 @@ void insertSegment(segment_array *array, segment_node *segment) {
     if (segments[segment->id] == NULL) {
         segments[segment->id] = segment;
     } else {
-        printf("Segment %d already exists, should NOT HAPPEN\n", segment->id);
+        // printf("Segment %d already exists, should NOT HAPPEN\n", segment->id);
     }
     atomic_store((array->locks+segment->id), false);
 }
@@ -239,4 +268,38 @@ int findEmptySegment(segment_array *array) {
         }
     }
     return -1;
+}
+
+bool freeSegments(transaction *pTransaction, Region* region) {
+    // printf("T%lu: Free Called.\n",pTransaction->id);
+    segment_ll* allocSet = pTransaction->allocListHead;
+    segment_ll* nextAllocSet;
+    while (allocSet != NULL) {
+        nextAllocSet = allocSet->next;
+        allocSet->segmentNode->deleted = true;
+        // region->segments.elements[allocSet->segmentNode->id] = NULL;
+        // free(allocSet->segmentNode->locks);
+        // free(allocSet->segmentNode->freeSpace);
+        // free(allocSet->segmentNode);
+        free(allocSet);
+        allocSet = nextAllocSet;
+    }
+    // printf("T%lu: Free finished.\n",pTransaction->id);
+    return true;
+}
+
+void allocateSegments(transaction* pTransaction, Region* region){
+    segment_ll* pAllocSet = pTransaction->allocListHead;
+    // printf("T%lu: Alloc Called.\n",pTransaction->id);
+    while(pAllocSet != NULL){
+        if(pAllocSet->segmentNode != NULL){
+            // printf("T%lu: Marking segment %d as accessible.\n", pTransaction->id, pAllocSet->segmentNode->id);
+            pAllocSet->segmentNode->accessible = true;
+            pAllocSet->segmentNode->allocator = 0;
+        }
+        segment_ll* next = pAllocSet->next;
+        free(pAllocSet);
+        pAllocSet = next;
+    }
+    // printf("T%lu: Alloc finished.\n",pTransaction->id);
 }

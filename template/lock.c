@@ -49,7 +49,7 @@ bool lock_is_locked_byAnotherThread(struct lock_t** lockArray, int size, struct 
                 return false;
             }
         }
-        printf("Lock is locked by another thread\n");
+        // printf("Lock is locked by another thread\n");
         return true;
     }
     return false;

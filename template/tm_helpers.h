@@ -148,6 +148,15 @@ void insertSegment(segment_array* array, segment_node* segment);
 **/
 int findEmptySegment(segment_array* array);
 
+/**This function given the transaction tries to free all the segments in the free set of the transaction
+ * We need to make sure that this transaction is the only one using that segment.
+ * @param transaction transaction to free the segments for
+ * @return bool true if all segments were freed, false otherwise
+ * **/
+bool freeSegments(transaction* pTransaction, Region* region);
+
+void allocateSegments(transaction* pTransaction, Region* region);
+
 /**
  ***************************************************************************************
  * END OF HELPER FUNCTIONS

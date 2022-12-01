@@ -88,8 +88,8 @@ shared_t tm_create(size_t size, size_t align) {
     firstSegment->align = align;
     firstSegment->allocator = 0;
     firstSegment->accessible = true;
-    firstSegment->numberofTransactions = 0;
     firstSegment->fakeSpace = address;
+    firstSegment->deleted = false;
     region->align       = align;
     region->segments.elements[firstSegment->id] = firstSegment;
     region->start = address;
@@ -162,6 +162,7 @@ tx_t tm_begin(shared_t shared, bool is_ro) {
     newTransaction->allocListTail = NULL;
     newTransaction->freeListHead = NULL;
     newTransaction->freeListTail = NULL;
+    newTransaction->region = region;
     newTransaction->version = region->globalVersion; // The transaction starts with the current global version.
     newTransaction->isReadOnly = is_ro;
     // Fetch and increment the latest transaction id
@@ -187,6 +188,12 @@ bool tm_end(shared_t shared, tx_t tx) {
                 read_set_node * currentReadSetNode = transaction->readSetHead;
                 while (currentReadSetNode != NULL) {
                     lock_node * lockNode = getLockNode(currentReadSetNode->segment, currentReadSetNode->offset);
+                    if(currentReadSetNode->segment->deleted) {
+                        releaseLocks(locksToAcquire, transaction->writeSetSize, transaction->id);
+                        clearSets(transaction,false);
+                        free(locksToAcquire);
+                        return false;
+                    }
                     if ( lockNode->version > transaction->version) {
                         releaseLocks(locksToAcquire, transaction->writeSetSize, transaction->id);
                         clearSets(transaction,false);
@@ -204,6 +211,16 @@ bool tm_end(shared_t shared, tx_t tx) {
                 }
             }
             write_set_node* currentWriteSetNode = transaction->writeSetHead;
+            while(currentWriteSetNode != NULL){
+                if(currentWriteSetNode->segment->deleted){
+                    releaseLocks(locksToAcquire, transaction->writeSetSize, transaction->id);
+                    clearSets(transaction,false);
+                    free(locksToAcquire);
+                    return false;
+                }
+                currentWriteSetNode = currentWriteSetNode->next;
+            }
+            currentWriteSetNode = transaction->writeSetHead;
             // Iterate over the write set and write the new values to shared memory and update their version
             while (currentWriteSetNode != NULL) {
                 // Update the version of the address.
@@ -214,6 +231,8 @@ bool tm_end(shared_t shared, tx_t tx) {
                        region->align);
                 currentWriteSetNode = currentWriteSetNode->next;
             }
+            if(transaction->allocListHead != NULL) allocateSegments(transaction,region);
+            if(transaction->freeListHead != NULL) freeSegments(transaction,region);
             // Release all the locks.
             releaseLocks(locksToAcquire, transaction->writeSetSize, transaction->id);
             free(locksToAcquire);
@@ -352,14 +371,14 @@ alloc_t tm_alloc(shared_t shared, tx_t tx, size_t size, void** target) {
     if(id == -1) {
         return nomem_alloc;
     }
-    void* address = (void*)(id << 48);
-    printf("Fake Address: %p\n", address);
+    void* address = (void*)((unsigned long)id << 48);
+    // printf("Fake Address: %p\n", address);
     segment_node* newSegment = (segment_node *) malloc(sizeof(segment_node));
     if (unlikely(!newSegment)) {
         atomic_store((region->segments.locks+id), false);
         return nomem_alloc;
     }
-    if (posix_memalign(newSegment->freeSpace, region->align, size) != 0) {
+    if (posix_memalign(&(newSegment->freeSpace), region->align, size) != 0) {
         free(newSegment);
         atomic_store((region->segments.locks+id), false);
         return nomem_alloc;
@@ -370,6 +389,8 @@ alloc_t tm_alloc(shared_t shared, tx_t tx, size_t size, void** target) {
     newSegment->lock_size = (wordCount / TSM_WORDS_PER_LOCK) + (wordCount % TSM_WORDS_PER_LOCK == 0 ? 0 : 1);
     newSegment->locks = (lock_node *) malloc(sizeof(lock_node) * newSegment->lock_size);
     newSegment->accessible = false;
+    newSegment->id = id;
+    newSegment->deleted = false;
     newSegment->allocator = transaction->id;
     if(unlikely(!newSegment->locks)) {
         free(newSegment->freeSpace);
@@ -412,7 +433,8 @@ alloc_t tm_alloc(shared_t shared, tx_t tx, size_t size, void** target) {
     }
     region->segments.elements[id] = newSegment;
     atomic_store((region->segments.locks+id), false);
-
+    // printf("Allocated segment %d\n", id);
+    memcpy(target, &newSegment->fakeSpace, sizeof(void*));
     return success_alloc;
 }
 
@@ -423,8 +445,10 @@ alloc_t tm_alloc(shared_t shared, tx_t tx, size_t size, void** target) {
  * @return Whether the whole transaction can continue
 **/
 bool tm_free(shared_t shared, tx_t tx, void* target) {
+    // printf("Freeing segment %p\n", target);
     Region* region = (Region *) shared;
     transaction* transaction = getTransaction(region, tx);
+    // printf("T%lu: TM_Free called.\n",transaction->id);
     segment_node* segment = findSegment(region, target,transaction);
     if(segment == NULL){
         clearSets(transaction,false);
@@ -449,5 +473,6 @@ bool tm_free(shared_t shared, tx_t tx, void* target) {
         tail->next->next = NULL;
         transaction->freeListTail = tail->next;
     }
+    // printf("T%lu: TM_Free finished.\n",transaction->id);
     return true;
 }
