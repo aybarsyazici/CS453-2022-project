@@ -167,7 +167,7 @@ bool clearSets(transaction *pTransaction, bool success) {
     if(pTransaction->region->txIdOnLatestFree >= pTransaction->id){
         pTransaction->region->finishedTxCountOnLatestFree++;
         if(pTransaction->region->finishedTxCountOnLatestFree == pTransaction->region->txIdOnLatestFree) {
-            for(int i=2; i < TSM_ARRAY_SIZE; i++){
+            for(int i=2; i <= pTransaction->region->largestSegmentId; i++){
                 if(pTransaction->region->segments.elements[i] != NULL && pTransaction->region->segments.elements[i]->deleted){
                     free(pTransaction->region->segments.elements[i]->locks);
                     free(pTransaction->region->segments.elements[i]->freeSpace);
@@ -314,6 +314,9 @@ void allocateSegments(transaction* pTransaction, Region* region){
             // printf("T%lu: Marking segment %d as accessible.\n", pTransaction->id, pAllocSet->segmentNode->id);
             pAllocSet->segmentNode->accessible = true;
             pAllocSet->segmentNode->allocator = 0;
+            if(pAllocSet->segmentNode->id > region->largestSegmentId){
+                region->largestSegmentId = pAllocSet->segmentNode->id;
+            }
         }
         segment_ll* next = pAllocSet->next;
         free(pAllocSet);

@@ -32,13 +32,14 @@ bool lock_is_locked(struct lock_t* lock) {
     return lock->mutex;
 }
 
-bool lock_acquire_blocking(struct lock_t* lock) {
+bool lock_acquire_blocking(struct lock_t* lock, unsigned long holder) {
     int bound = 0;
     while(atomic_compare_exchange_strong(&lock->mutex, &(bool){false}, true)){
         if (bound > 100) return false;
-        usleep(10);
+        //usleep(10);
         bound++;
     }
+    lock->holder = holder;
     return true;
 }
 
@@ -56,5 +57,5 @@ bool lock_is_locked_byAnotherThread(struct lock_t** lockArray, int size, struct 
 }
 
 bool lock_is_locked_byAnotherThread_holder(struct lock_t *lock, unsigned long potentialHolder) {
-    return lock->holder != potentialHolder && lock->mutex;
+    return lock->mutex && lock->holder != potentialHolder;
 }

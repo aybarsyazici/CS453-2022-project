@@ -36,7 +36,7 @@ bool lock_acquire(struct lock_t* lock, unsigned long holder);
  * @param holder The thread that is acquiring the lock
  * @return Whether the operation is a success
 **/
-bool lock_acquire_blocking(struct lock_t* lock);
+bool lock_acquire_blocking(struct lock_t* lock, unsigned long holder);
 /** Release the given lock.
  * @param lock Lock to release
  * @param holder The thread that is releasing the lock

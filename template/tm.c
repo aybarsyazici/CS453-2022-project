@@ -96,6 +96,7 @@ shared_t tm_create(size_t size, size_t align) {
     region->latestTransactionId = 0;
     region->finishedTxCountOnLatestFree = 0;
     region->txIdOnLatestFree = 0;
+    region->largestSegmentId = 1;
     return region;
 }
 
@@ -183,7 +184,6 @@ bool tm_end(shared_t shared, tx_t tx) {
     if(!transaction->isReadOnly){
         lock_t** locksToAcquire = getLocks(transaction);
         if(acquireLocks(locksToAcquire, transaction->writeSetSize, transaction->id)) {
-            unsigned long temp = region->globalVersion;
             atomic_ulong newVersion = ++region->globalVersion;
             if(transaction->version + 1 != newVersion) {
                 read_set_node * currentReadSetNode = transaction->readSetHead;
@@ -202,12 +202,6 @@ bool tm_end(shared_t shared, tx_t tx) {
                         free(locksToAcquire);
                         return false;
                     }
-//                    if(lock_is_locked_byAnotherThread(locksToAcquire, transaction->writeSetSize, &lockNode->lock)) {
-//                        releaseLocks(locksToAcquire, transaction->writeSetSize, transaction->id);
-//                        clearSets(transaction,false);
-//                        free(locksToAcquire);
-//                        return false;
-//                    }
                     currentReadSetNode = currentReadSetNode->next;
                 }
             }

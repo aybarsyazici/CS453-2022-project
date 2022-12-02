@@ -82,6 +82,7 @@ typedef struct Region {
     atomic_ulong txIdOnLatestFree; // Transaction id on latest free
     atomic_ulong finishedTxCount; // Number of finished transactions
     atomic_ulong finishedTxCountOnLatestFree; // Number of finished transactions on latest free
+    atomic_ulong largestSegmentId;
 } Region;
 
 // Transaction declaration to implement Transactional Locking II.
