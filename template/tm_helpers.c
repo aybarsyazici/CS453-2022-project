@@ -163,6 +163,20 @@ bool clearSets(transaction *pTransaction, bool success) {
             allocSet = nextAllocSet;
         }
     }
+    pTransaction->region->finishedTxCount++;
+    if(pTransaction->region->txIdOnLatestFree >= pTransaction->id){
+        pTransaction->region->finishedTxCountOnLatestFree++;
+        if(pTransaction->region->finishedTxCountOnLatestFree == pTransaction->region->txIdOnLatestFree) {
+            for(int i=2; i < TSM_ARRAY_SIZE; i++){
+                if(pTransaction->region->segments.elements[i] != NULL && pTransaction->region->segments.elements[i]->deleted){
+                    free(pTransaction->region->segments.elements[i]->locks);
+                    free(pTransaction->region->segments.elements[i]->freeSpace);
+                    free(pTransaction->region->segments.elements[i]);
+                    pTransaction->region->segments.elements[i] = NULL;
+                }
+            }
+        }
+    }
     free(pTransaction);
     return true;
 }
@@ -285,6 +299,10 @@ bool freeSegments(transaction *pTransaction, Region* region) {
         allocSet = nextAllocSet;
     }
     // printf("T%lu: Free finished.\n",pTransaction->id);
+    if(region->latestTransactionId > region->txIdOnLatestFree){
+        region->finishedTxCountOnLatestFree = region->finishedTxCount;
+        region->txIdOnLatestFree = region->latestTransactionId;
+    }
     return true;
 }
 

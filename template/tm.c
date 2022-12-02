@@ -83,7 +83,6 @@ shared_t tm_create(size_t size, size_t align) {
     }
     firstSegment->id    = 1;
     void* address = (void*)((unsigned long)firstSegment->id << 48);
-    printf("Created region with start address %p\n",address);
     firstSegment->size  = size;
     firstSegment->align = align;
     firstSegment->allocator = 0;
@@ -94,7 +93,9 @@ shared_t tm_create(size_t size, size_t align) {
     region->segments.elements[firstSegment->id] = firstSegment;
     region->start = address;
     region->globalVersion = 0;
-    region->latestTransactionId = 1;
+    region->latestTransactionId = 0;
+    region->finishedTxCountOnLatestFree = 0;
+    region->txIdOnLatestFree = 0;
     return region;
 }
 
@@ -188,12 +189,6 @@ bool tm_end(shared_t shared, tx_t tx) {
                 read_set_node * currentReadSetNode = transaction->readSetHead;
                 while (currentReadSetNode != NULL) {
                     lock_node * lockNode = getLockNode(currentReadSetNode->segment, currentReadSetNode->offset);
-                    if(currentReadSetNode->segment->deleted) {
-                        releaseLocks(locksToAcquire, transaction->writeSetSize, transaction->id);
-                        clearSets(transaction,false);
-                        free(locksToAcquire);
-                        return false;
-                    }
                     if ( lockNode->version > transaction->version) {
                         releaseLocks(locksToAcquire, transaction->writeSetSize, transaction->id);
                         clearSets(transaction,false);
@@ -201,26 +196,22 @@ bool tm_end(shared_t shared, tx_t tx) {
                         return false;
                     }
                     // Check if current read set node is locked
-                    if(lock_is_locked_byAnotherThread(locksToAcquire, transaction->writeSetSize, &lockNode->lock)) {
+                    if(lock_is_locked_byAnotherThread_holder(&lockNode->lock, transaction->id)) {
                         releaseLocks(locksToAcquire, transaction->writeSetSize, transaction->id);
                         clearSets(transaction,false);
                         free(locksToAcquire);
                         return false;
                     }
+//                    if(lock_is_locked_byAnotherThread(locksToAcquire, transaction->writeSetSize, &lockNode->lock)) {
+//                        releaseLocks(locksToAcquire, transaction->writeSetSize, transaction->id);
+//                        clearSets(transaction,false);
+//                        free(locksToAcquire);
+//                        return false;
+//                    }
                     currentReadSetNode = currentReadSetNode->next;
                 }
             }
             write_set_node* currentWriteSetNode = transaction->writeSetHead;
-            while(currentWriteSetNode != NULL){
-                if(currentWriteSetNode->segment->deleted){
-                    releaseLocks(locksToAcquire, transaction->writeSetSize, transaction->id);
-                    clearSets(transaction,false);
-                    free(locksToAcquire);
-                    return false;
-                }
-                currentWriteSetNode = currentWriteSetNode->next;
-            }
-            currentWriteSetNode = transaction->writeSetHead;
             // Iterate over the write set and write the new values to shared memory and update their version
             while (currentWriteSetNode != NULL) {
                 // Update the version of the address.

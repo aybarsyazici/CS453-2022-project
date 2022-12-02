@@ -79,6 +79,9 @@ typedef struct Region {
     unsigned long align;       // Size of a word in the shared memory region (in bytes)
     atomic_ulong globalVersion; // Global version of the shared memory region
     atomic_ulong latestTransactionId; // Latest transaction id
+    atomic_ulong txIdOnLatestFree; // Transaction id on latest free
+    atomic_ulong finishedTxCount; // Number of finished transactions
+    atomic_ulong finishedTxCountOnLatestFree; // Number of finished transactions on latest free
 } Region;
 
 // Transaction declaration to implement Transactional Locking II.
