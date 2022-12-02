@@ -3,23 +3,20 @@
 //
 
 #include <printf.h>
-#include <string.h>
 #include "tm_helpers.h"
 
 void addReadSet(transaction *pTransaction, segment_node *pSegment, unsigned long offset) {
-    read_set_node * newReadSet = (read_set_node *) malloc(sizeof(read_set_node)); // Create a new readSet node
-    newReadSet->segment = pSegment; // Which segment we read from
-    newReadSet->offset = offset; // Set the offset(how many words away from the start of the segment)
-    newReadSet->next = NULL; // The next is NULL as this is the newest node
-    if (pTransaction->readSetHead == NULL) { // If the head is NULL, then this is the first node
-        pTransaction->readSetHead = newReadSet;
-        pTransaction->readSetTail = newReadSet;
-        pTransaction->readSetSize = 1;
+    read_set_node *newReadSet = pTransaction->readSetTail;
+    newReadSet->segment = pSegment;
+    newReadSet->offset = offset;
+    pTransaction->readSetSize++;
+    if(pTransaction->readSetSize % SET_START_SIZE != 0){
+        pTransaction->readSetTail = pTransaction->readSetTail+1;
+        newReadSet->next = pTransaction->readSetTail;
     }
-    else { // If the head is not NULL, then we have to add the node to the end of the list
-        pTransaction->readSetTail->next = newReadSet;
-        pTransaction->readSetTail = newReadSet;
-        pTransaction->readSetSize++;
+    else{
+        pTransaction->readSetTail->next = (read_set_node *) malloc(sizeof(read_set_node)*SET_START_SIZE);
+        pTransaction->readSetTail = pTransaction->readSetTail->next;
     }
 }
 
@@ -58,33 +55,61 @@ segment_node *findSegment(Region *pRegion, void *address, transaction *pTransact
 }
 
 void addWriteSet(transaction *pTransaction, segment_node *pSegment, unsigned long offset, void *value, unsigned long align) {
-    write_set_node *newWriteSet = (write_set_node *) malloc(sizeof(write_set_node));
+    write_set_node *newWriteSet = pTransaction->writeSetTail;
     newWriteSet->segment = pSegment;
     newWriteSet->offset = offset;
     newWriteSet->value = value;
     newWriteSet->address = (uint64_t) &(*(pSegment->freeSpace + offset * align));
-    newWriteSet->next = NULL;
+    pTransaction->writeSetSize++;
+    if(pTransaction->writeSetSize % SET_START_SIZE != 0){
+        pTransaction->writeSetTail = pTransaction->writeSetTail+1;
+        newWriteSet->next = pTransaction->writeSetTail;
+    }
+    else{
+        // printf("TX%lu: Write set is full %d SET_START_SIZE:%d, RESULT:%d \n",pTransaction->id, pTransaction->writeSetSize, SET_START_SIZE, pTransaction->writeSetSize % SET_START_SIZE);
+        pTransaction->writeSetTail->next = (write_set_node *) malloc(sizeof(write_set_node)*SET_START_SIZE);
+        pTransaction->writeSetTail = pTransaction->writeSetTail->next;
+        // printf("TX%lu: Write set Extended %d\n",pTransaction->id, pTransaction->writeSetSize);
+    }
+
     // Add to bloom filter
     // bloom_add(pTransaction->writeSetBloom, &newWriteSet->address, sizeof(shared_t));
-    if (pTransaction->writeSetHead == NULL) {
-        pTransaction->writeSetHead = newWriteSet;
-        pTransaction->writeSetTail = newWriteSet;
-        pTransaction->writeSetSize = 1;
-    } else {
-        pTransaction->writeSetTail->next = newWriteSet;
-        pTransaction->writeSetTail = newWriteSet;
-        pTransaction->writeSetSize++;
-    }
+    // Hash the address and add it to the hashmap
+//    unsigned int index = murmurhash2(&newWriteSet->address, sizeof(uint64_t), 0);
+//    write_set_node *current = pTransaction->hashMap[index % HASH_SIZE];
+//    if(current != NULL){
+//        while (current->hashMapNext != NULL) {
+//            current = current->hashMapNext;
+//        }
+//        current->hashMapNext = newWriteSet;
+//    }else {
+//        pTransaction->hashMap[index % HASH_SIZE] = newWriteSet;
+//    }
+
 }
 
 write_set_node *checkWriteSet(Region *pRegion, transaction *pTransaction, void *address) {
     // Check if address is in bloom filter
-    //uint64_t toCheck = ((uint64_t)&(*address));
-    //if (!bloom_check(pTransaction->writeSetBloom, &toCheck, sizeof(uint64_t))) {
-        //return NULL;
-    //}
+    // uint64_t toCheck = ((uint64_t)&(*address));
+    // if (!bloom_check(pTransaction->writeSetBloom, &toCheck, sizeof(uint64_t))) {
+        // return NULL;
+    // }
+//    uint64_t temp = (uint64_t) &(*address);
+//    unsigned int index = murmurhash2(&temp, sizeof(uint64_t), 0);
+//    write_set_node *current = pTransaction->hashMap[index % HASH_SIZE];
+//    if(current == NULL){
+//        return NULL;
+//    } else {
+//        while(current->address != (uint64_t) &(*address)){
+//            current = current->hashMapNext;
+//            if(current == NULL){
+//                return NULL;
+//            }
+//        }
+//        return current;
+//    }
     write_set_node *currentWriteSet = pTransaction->writeSetHead;
-    while (currentWriteSet != NULL) {
+    while (currentWriteSet != pTransaction->writeSetTail) {
         // Each write set node contains which segment it wrote to and the offset from the start of the segment
         // Note that the offset is kept in terms of alignments(i.e. words), not bytes
         // So to check if this current write set node wrote to the address we are looking for,
@@ -123,29 +148,43 @@ bool clearSets(transaction *pTransaction, bool success) {
     // First clear the write set
     write_set_node *currentWriteSet = pTransaction->writeSetHead;
     write_set_node *nextWriteSet;
-    while (currentWriteSet != NULL) {
-        nextWriteSet = currentWriteSet->next;
-        if(currentWriteSet->segment == NULL){
-            // printf("WRITE SET SEGMENT NULL, SHOULD NOT HAPPEN\n");
-        }
-        free(currentWriteSet->value);
+    int numberOfFreesRequired = (pTransaction->writeSetSize / SET_START_SIZE) + 1;
+    for(int i = 0; i < numberOfFreesRequired; i++){
+        nextWriteSet = (currentWriteSet+(SET_START_SIZE-1))->next;
         free(currentWriteSet);
         currentWriteSet = nextWriteSet;
     }
+//    while (currentWriteSet != NULL) {
+//        nextWriteSet = currentWriteSet->next;
+//        if(currentWriteSet->segment == NULL){
+//            // printf("WRITE SET SEGMENT NULL, SHOULD NOT HAPPEN\n");
+//        }
+//        free(currentWriteSet->value);
+//        free(currentWriteSet);
+//        currentWriteSet = nextWriteSet;
+//    }
     pTransaction->writeSetHead = NULL;
     pTransaction->writeSetTail = NULL;
     pTransaction->writeSetSize = 0;
+    // bloom_free(pTransaction->writeSetBloom);
+    // free(pTransaction->writeSetBloom);
     // Now clear the read set
     read_set_node *currentReadSet = pTransaction->readSetHead;
     read_set_node *nextReadSet;
-    while (currentReadSet != NULL) {
-        nextReadSet = currentReadSet->next;
-        if(currentReadSet->segment == NULL) {
-            // printf("READ SET SEGMENT NULL, SHOULD NOT HAPPEN\n");
-        }
+    numberOfFreesRequired = (pTransaction->readSetSize / SET_START_SIZE) + 1;
+    for(int i = 0; i < numberOfFreesRequired; i++){
+        nextReadSet = (currentReadSet+(SET_START_SIZE-1))->next;
         free(currentReadSet);
         currentReadSet = nextReadSet;
     }
+//    while (currentReadSet != NULL) {
+//        nextReadSet = currentReadSet->next;
+//        if(currentReadSet->segment == NULL) {
+//            // printf("READ SET SEGMENT NULL, SHOULD NOT HAPPEN\n");
+//        }
+//        free(currentReadSet);
+//        currentReadSet = nextReadSet;
+//    }
     pTransaction->readSetHead = NULL;
     pTransaction->readSetTail = NULL;
     pTransaction->readSetSize = 0;

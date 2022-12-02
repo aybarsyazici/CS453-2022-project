@@ -12,6 +12,8 @@
 
 #define TSM_WORDS_PER_LOCK 1
 #define TSM_ARRAY_SIZE 65536
+#define SET_START_SIZE 1000
+#define HASH_SIZE 100
 
 typedef struct lock_node {
     lock_t lock;
@@ -56,9 +58,11 @@ typedef struct read_set_node {
 // finally the version at the time of the writing operation
 typedef struct write_set_node {
     struct write_set_node* next; // Pointer to the next write set node
+    struct write_set_node* hashMapNext; // Pointer to the next write set node in the hash map
     segment_node* segment; // Pointer to the segment that the write set node is writing to
     unsigned long offset; // Word that the write set node is writing to, this is the index of the word in the segment
     // (i.e. how many alignments we wrote to the start of the segment)
+    bool initialized; // Whether the write set node is initialized or not
     shared_t value; // new value of the word at the time of the writing operation
     uint64_t address;
 } write_set_node;
@@ -79,6 +83,7 @@ typedef struct Region {
     unsigned long align;       // Size of a word in the shared memory region (in bytes)
     atomic_ulong globalVersion; // Global version of the shared memory region
     atomic_ulong latestTransactionId; // Latest transaction id
+    atomic_ulong largestFreeTxId; // Largest free transaction id
 } Region;
 
 // Transaction declaration to implement Transactional Locking II.
@@ -95,10 +100,12 @@ typedef struct transaction{
     read_set_node* readSetTail; // Pointer pointing to the last of the read set nodes
     write_set_node* writeSetHead; // Pointer pointing to the first of the write set nodes
     write_set_node* writeSetTail; // Pointer pointing to the last of the write set nodes
+    // write_set_node* hashMap[HASH_SIZE]; // Hash map to keep track of the write set nodes
     segment_ll* allocListHead; // Pointer pointing to the first of the allocated segments
     segment_ll* allocListTail; // Pointer pointing to the last of the allocated segments
     segment_ll* freeListHead; // Pointer pointing to the first of the free segments
     segment_ll* freeListTail; // Pointer pointing to the last of the free segments
+    // bloom* writeSetBloom;
     int readSetSize; // Size of the read set
     int writeSetSize; // Size of the write set
     bool isReadOnly; // Boolean to check if the transaction is read only or not

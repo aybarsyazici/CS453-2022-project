@@ -24,6 +24,7 @@
 // External headers
 
 // Internal headers
+#include <sys/types.h>
 #include <tm.h>
 #include <stdlib.h>
 #include <string.h>
@@ -39,6 +40,7 @@
  * @return Opaque shared memory region handle, 'invalid_shared' on failure
 **/
 shared_t tm_create(size_t size, size_t align) {
+    // printf("SET_SIZE: %d, HASH_SIZE: %d, TSM_ARRAY_SIZE: %d, TSM_WORDS_PER_LOCK: %d\n", SET_START_SIZE, HASH_SIZE, TSM_ARRAY_SIZE, TSM_WORDS_PER_LOCK);
     Region* region = (Region *) malloc(sizeof(Region));
     if (unlikely(!region)) {
         return invalid_shared;
@@ -83,7 +85,7 @@ shared_t tm_create(size_t size, size_t align) {
     }
     firstSegment->id    = 1;
     void* address = (void*)((unsigned long)firstSegment->id << 48);
-    printf("Created region with start address %p\n",address);
+    // printf("Created region with start address %p\n",address);
     firstSegment->size  = size;
     firstSegment->align = align;
     firstSegment->allocator = 0;
@@ -154,20 +156,22 @@ tx_t tm_begin(shared_t shared, bool is_ro) {
         return invalid_tx;
     }
     // Initialize the transaction with an empty readSet and writeSet.
-    newTransaction->readSetHead = NULL;
-    newTransaction->readSetTail = NULL;
-    newTransaction->writeSetHead = NULL;
-    newTransaction->writeSetTail = NULL;
+    newTransaction->readSetHead = malloc(sizeof(write_set_node)*SET_START_SIZE);;
+    newTransaction->readSetTail = newTransaction->readSetHead;
+    newTransaction->writeSetHead = malloc(sizeof(write_set_node)*SET_START_SIZE);
+    newTransaction->writeSetTail = newTransaction->writeSetHead;
     newTransaction->allocListHead = NULL;
     newTransaction->allocListTail = NULL;
     newTransaction->freeListHead = NULL;
     newTransaction->freeListTail = NULL;
+    newTransaction->writeSetSize = 0;
+    newTransaction->readSetSize = 0;
     newTransaction->region = region;
     newTransaction->version = region->globalVersion; // The transaction starts with the current global version.
     newTransaction->isReadOnly = is_ro;
     // Fetch and increment the latest transaction id
-    newTransaction->id = ++region->latestTransactionId;
-    // bloom_init2(newTransaction->writeSetBloom, 100000, 0.01);
+    // newTransaction->writeSetBloom = (bloom*)malloc(sizeof(bloom));
+    // bloom_init2(newTransaction->writeSetBloom, 1000, 0.01);
     return (tx_t)newTransaction;
 }
 
@@ -182,26 +186,18 @@ bool tm_end(shared_t shared, tx_t tx) {
     if(!transaction->isReadOnly){
         lock_t** locksToAcquire = getLocks(transaction);
         if(acquireLocks(locksToAcquire, transaction->writeSetSize, transaction->id)) {
-            unsigned long temp = region->globalVersion;
             atomic_ulong newVersion = ++region->globalVersion;
             if(transaction->version + 1 != newVersion) {
                 read_set_node * currentReadSetNode = transaction->readSetHead;
-                while (currentReadSetNode != NULL) {
+                while (currentReadSetNode != transaction->readSetTail) {
                     lock_node * lockNode = getLockNode(currentReadSetNode->segment, currentReadSetNode->offset);
-                    if(currentReadSetNode->segment->deleted) {
-                        releaseLocks(locksToAcquire, transaction->writeSetSize, transaction->id);
-                        clearSets(transaction,false);
-                        free(locksToAcquire);
-                        return false;
-                    }
                     if ( lockNode->version > transaction->version) {
                         releaseLocks(locksToAcquire, transaction->writeSetSize, transaction->id);
                         clearSets(transaction,false);
                         free(locksToAcquire);
                         return false;
                     }
-                    // Check if current read set node is locked
-                    if(lock_is_locked_byAnotherThread(locksToAcquire, transaction->writeSetSize, &lockNode->lock)) {
+                    if(lock_is_locked_byAnotherThread_holder(&lockNode->lock, transaction->id)) {
                         releaseLocks(locksToAcquire, transaction->writeSetSize, transaction->id);
                         clearSets(transaction,false);
                         free(locksToAcquire);
@@ -211,18 +207,8 @@ bool tm_end(shared_t shared, tx_t tx) {
                 }
             }
             write_set_node* currentWriteSetNode = transaction->writeSetHead;
-            while(currentWriteSetNode != NULL){
-                if(currentWriteSetNode->segment->deleted){
-                    releaseLocks(locksToAcquire, transaction->writeSetSize, transaction->id);
-                    clearSets(transaction,false);
-                    free(locksToAcquire);
-                    return false;
-                }
-                currentWriteSetNode = currentWriteSetNode->next;
-            }
-            currentWriteSetNode = transaction->writeSetHead;
             // Iterate over the write set and write the new values to shared memory and update their version
-            while (currentWriteSetNode != NULL) {
+            while (currentWriteSetNode != transaction->writeSetTail) {
                 // Update the version of the address.
                 getLockNode(currentWriteSetNode->segment, currentWriteSetNode->offset)->version = newVersion;
                 // Write the new value to shared memory.
