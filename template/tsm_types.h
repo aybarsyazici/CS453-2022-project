@@ -19,8 +19,6 @@ typedef struct lock_node {
 } lock_node;
 
 typedef struct segment_node {
-    atomic_ulong allocator;
-    atomic_bool accessible;
     atomic_bool deleted;
     shared_t freeSpace; // Actual free space in the segment
     shared_t fakeSpace; // Fake space to be returned to the user where he can write or read concurrently
@@ -73,6 +71,16 @@ typedef struct segment_ll{
     struct segment_ll* next;
 }segment_ll;
 
+//typedef struct map_index{
+//    write_set_node* writeSetNode;
+//    struct map_index* next;
+//}map_index;
+//
+//typedef struct hashmap{
+//    map_index* map;
+//    atomic_flag* locks;
+//}hashmap;
+
 typedef struct Region {
     void* start;         // Start of the shared memory region (i.e., of the non-deallocable memory segment)
     segment_array segments; // Array of pointers to segments
@@ -82,7 +90,7 @@ typedef struct Region {
     atomic_ulong txIdOnLatestFree; // Transaction id on latest free
     atomic_ulong finishedTxCount; // Number of finished transactions
     atomic_ulong finishedTxCountOnLatestFree; // Number of finished transactions on latest free
-    atomic_ulong largestSegmentId;
+    atomic_uint largestSegmentId;
 } Region;
 
 // Transaction declaration to implement Transactional Locking II.

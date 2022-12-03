@@ -3,7 +3,6 @@
 //
 
 #include <printf.h>
-#include <string.h>
 #include "tm_helpers.h"
 
 void addReadSet(transaction *pTransaction, segment_node *pSegment, unsigned long offset) {
@@ -45,11 +44,6 @@ segment_node *findSegment(Region *pRegion, void *address, transaction *pTransact
         // printf("Segment not found, address: %p",address);
         return NULL;
     };
-    if(toReturn->accessible == 0 && pTransaction->id != toReturn->allocator){
-        // printf("Segment %d, segmentFakeSpace %p\n",toReturn->id, toReturn->fakeSpace);
-        // printf("PROBLEM!\n");
-        return NULL;
-    }
     if(toReturn->deleted) {
         // printf("Segment %d is deleted\n",toReturn->id);
         return NULL;
@@ -75,6 +69,7 @@ void addWriteSet(transaction *pTransaction, segment_node *pSegment, unsigned lon
         pTransaction->writeSetTail = newWriteSet;
         pTransaction->writeSetSize++;
     }
+
 }
 
 write_set_node *checkWriteSet(Region *pRegion, transaction *pTransaction, void *address) {
@@ -162,6 +157,16 @@ bool clearSets(transaction *pTransaction, bool success) {
             free(allocSet);
             allocSet = nextAllocSet;
         }
+
+        // Free the free set
+        segment_ll* freeSet = pTransaction->freeListHead;
+        segment_ll* nextFreeSet;
+        while (freeSet != NULL) {
+            nextFreeSet = freeSet->next;
+            free(freeSet);
+            freeSet = nextFreeSet;
+        }
+        //printf("Transaction %lu failed RO: %d, aborting\n",pTransaction->id, pTransaction->isReadOnly);
     }
     pTransaction->region->finishedTxCount++;
     if(pTransaction->region->txIdOnLatestFree >= pTransaction->id){
@@ -173,6 +178,7 @@ bool clearSets(transaction *pTransaction, bool success) {
                     free(pTransaction->region->segments.elements[i]->freeSpace);
                     free(pTransaction->region->segments.elements[i]);
                     pTransaction->region->segments.elements[i] = NULL;
+                    //printf("DELETED SEGMENT %d\n", i);
                 }
             }
         }
@@ -235,9 +241,9 @@ void releaseLocks_naive(transaction *pTransaction) {
     write_set_node *pWriteSetNode = pTransaction->writeSetHead;
     while (pWriteSetNode != NULL) {
         // Get the lock for the current write set node
-        lock_node* lockNode = getLockNode(pWriteSetNode->segment, pWriteSetNode->offset);
+        lock_t* lockNode = getLock(pWriteSetNode->segment, pWriteSetNode->offset);
         // Release the lock
-        lock_release(&lockNode->lock, pTransaction->id);
+        lock_release(lockNode, pTransaction->id);
         // Move to the next write set node
         pWriteSetNode = pWriteSetNode->next;
     }
@@ -248,11 +254,16 @@ bool acquireLocks_naive(transaction *pTransaction) {
     write_set_node* pWriteSetNode = pTransaction->writeSetHead;
     while(pWriteSetNode != NULL){
         // Get the lock for the current write set node
-        lock_node* lockNode = getLockNode(pWriteSetNode->segment, pWriteSetNode->offset);
+        lock_t* lockNode = getLock(pWriteSetNode->segment, pWriteSetNode->offset);
         // Try to acquire the lock
-        if(!lock_acquire(&lockNode->lock, pTransaction->id)){
+        if(!lock_acquire(lockNode, pTransaction->id)){
             // If we failed to acquire the lock, release all the locks we acquired so far
-            releaseLocks_naive(pTransaction);
+            write_set_node* pWriteSetNode2 = pTransaction->writeSetHead;
+            while(pWriteSetNode2 != pWriteSetNode){
+                lock_t* lockNode2 = getLock(pWriteSetNode2->segment, pWriteSetNode2->offset);
+                lock_release(lockNode2, pTransaction->id);
+                pWriteSetNode2 = pWriteSetNode2->next;
+            }
             return false;
         }
         // Move to the next write set node
@@ -286,17 +297,13 @@ int findEmptySegment(segment_array *array) {
 
 bool freeSegments(transaction *pTransaction, Region* region) {
     // printf("T%lu: Free Called.\n",pTransaction->id);
-    segment_ll* allocSet = pTransaction->allocListHead;
-    segment_ll* nextAllocSet;
-    while (allocSet != NULL) {
-        nextAllocSet = allocSet->next;
-        allocSet->segmentNode->deleted = true;
-        // region->segments.elements[allocSet->segmentNode->id] = NULL;
-        // free(allocSet->segmentNode->locks);
-        // free(allocSet->segmentNode->freeSpace);
-        // free(allocSet->segmentNode);
-        free(allocSet);
-        allocSet = nextAllocSet;
+    segment_ll* freeSet = pTransaction->freeListHead;
+    segment_ll* nextFreeSet;
+    while (freeSet != NULL) {
+        nextFreeSet = freeSet->next;
+        freeSet->segmentNode->deleted = true;
+        free(freeSet);
+        freeSet = nextFreeSet;
     }
     // printf("T%lu: Free finished.\n",pTransaction->id);
     if(region->latestTransactionId > region->txIdOnLatestFree){
@@ -312,8 +319,6 @@ void allocateSegments(transaction* pTransaction, Region* region){
     while(pAllocSet != NULL){
         if(pAllocSet->segmentNode != NULL){
             // printf("T%lu: Marking segment %d as accessible.\n", pTransaction->id, pAllocSet->segmentNode->id);
-            pAllocSet->segmentNode->accessible = true;
-            pAllocSet->segmentNode->allocator = 0;
             if(pAllocSet->segmentNode->id > region->largestSegmentId){
                 region->largestSegmentId = pAllocSet->segmentNode->id;
             }

@@ -85,8 +85,6 @@ shared_t tm_create(size_t size, size_t align) {
     void* address = (void*)((unsigned long)firstSegment->id << 48);
     firstSegment->size  = size;
     firstSegment->align = align;
-    firstSegment->allocator = 0;
-    firstSegment->accessible = true;
     firstSegment->fakeSpace = address;
     firstSegment->deleted = false;
     region->align       = align;
@@ -160,6 +158,8 @@ tx_t tm_begin(shared_t shared, bool is_ro) {
     newTransaction->readSetTail = NULL;
     newTransaction->writeSetHead = NULL;
     newTransaction->writeSetTail = NULL;
+    newTransaction->writeSetSize = 0;
+    newTransaction->readSetSize = 0;
     newTransaction->allocListHead = NULL;
     newTransaction->allocListTail = NULL;
     newTransaction->freeListHead = NULL;
@@ -214,12 +214,13 @@ bool tm_end(shared_t shared, tx_t tx) {
                 memcpy(currentWriteSetNode->segment->freeSpace + currentWriteSetNode->offset * region->align,
                        currentWriteSetNode->value,
                        region->align);
+                lock_release(getLock(currentWriteSetNode->segment, currentWriteSetNode->offset), transaction->id);
                 currentWriteSetNode = currentWriteSetNode->next;
             }
             if(transaction->allocListHead != NULL) allocateSegments(transaction,region);
             if(transaction->freeListHead != NULL) freeSegments(transaction,region);
             // Release all the locks.
-            releaseLocks(locksToAcquire, transaction->writeSetSize, transaction->id);
+            // releaseLocks(locksToAcquire, transaction->writeSetSize, transaction->id);
             free(locksToAcquire);
         }
         else{
@@ -255,34 +256,25 @@ bool tm_read(shared_t shared, tx_t tx, void const* source, size_t size, void* ta
         void* currentTarget = (void*) target + currentWord * region->align;
         void* currentSource = (void*) actualSource + currentWord * region->align;
 
-        write_set_node* writeSetNode = NULL;
 
         size_t offset = (size_t) (currentSource - segment->freeSpace) / region->align;
         lock_node* lockNode = getLockNode(segment, offset);
         unsigned long version = lockNode->version;
 
-        if(version != lockNode->version){
-            clearSets(transaction,false);
-            return false;
-        }
-        if (lock_is_locked(&lockNode->lock)) {
-            clearSets(transaction,false);
-            return false;
-        }
-        if (lockNode->version > transaction->version) {
-            clearSets(transaction,false);
-            return false;
-        }
 
         if (!transaction->isReadOnly) {
-            writeSetNode = checkWriteSet(region, transaction, currentSource);
-        }
-        if(writeSetNode == NULL){
-            memcpy(currentTarget, currentSource, region->align);
+            write_set_node* writeSetNode = checkWriteSet(region, transaction, currentSource);
+            if(writeSetNode == NULL){
+                memcpy(currentTarget, currentSource, region->align);
+            }
+            else{
+                memcpy(currentTarget, writeSetNode->value, region->align);
+            }
         }
         else{
-            memcpy(currentTarget, writeSetNode->value, region->align);
+            memcpy(currentTarget, currentSource, region->align);
         }
+
         if(version != lockNode->version){
             clearSets(transaction,false);
             return false;
@@ -373,10 +365,8 @@ alloc_t tm_alloc(shared_t shared, tx_t tx, size_t size, void** target) {
     size_t wordCount = size / region->align;
     newSegment->lock_size = (wordCount / TSM_WORDS_PER_LOCK) + (wordCount % TSM_WORDS_PER_LOCK == 0 ? 0 : 1);
     newSegment->locks = (lock_node *) malloc(sizeof(lock_node) * newSegment->lock_size);
-    newSegment->accessible = false;
     newSegment->id = id;
     newSegment->deleted = false;
-    newSegment->allocator = transaction->id;
     if(unlikely(!newSegment->locks)) {
         free(newSegment->freeSpace);
         free(newSegment);

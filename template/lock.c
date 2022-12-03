@@ -26,6 +26,9 @@ void lock_release(struct lock_t* lock, unsigned long holder) {
         lock->holder = 0;
         lock->mutex = false;
     }
+    else{
+        printf("SHOULDN'T HAPPEN\n");
+    }
 }
 
 bool lock_is_locked(struct lock_t* lock) {
